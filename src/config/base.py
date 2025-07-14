@@ -27,7 +27,7 @@ def parse_args(base_parser, args, namespace):
     parser.add_argument('--results_base_folder', default="./exps", type=str) 
     parser.add_argument('--grad_clip', default=0.0, type=float) # default value is 1.0 in NanoGPT
     # Dataset params
-    parser.add_argument('--dataset', default='mathqa', choices=['slimpajama', 'wikitext', "shakespeare-char", 'arxiv', "arxiv2000", "arxiv+wiki", 'openwebtext2', 'mathqa'])
+    parser.add_argument('--dataset', default='stackexchange', choices=['stackexchange', 'wikitext', "shakespeare-char", 'arxiv', "arxiv2000", "arxiv+wiki", 'openwebtext2', 'mathqa'])
     parser.add_argument('--vocab_size', default=50304, type=int)
     parser.add_argument('--data_in_ram', action='store_true') # force the data to RAM, mostly useless except for openwebtext2 
     # Model params
@@ -38,10 +38,14 @@ def parse_args(base_parser, args, namespace):
     parser.add_argument('--n_layer', default=6, type=int) # depths in att + ff blocks
     parser.add_argument('--n_embd', default=768, type=int) # embedding size / hidden size ... 
     parser.add_argument('--sequence_length', default=512, type=int)
-    parser.add_argument('--dtype', default=torch.float16, type=torch.dtype)
+    parser.add_argument('--dtype', default=torch.bfloat16, type=torch.dtype)
     parser.add_argument('--bias', default=False, type=bool)
     parser.add_argument('--compile', action='store_true') # if true then model is compiled 
     parser.add_argument("--rmsnorm_eps", default=1e-5, type=float)
+    parser.add_argument('--moe_num_experts', default=2, type=int) # numv of experts in MoE layer
+    parser.add_argument('--moe_num_experts_per_tok', default=1, type=int)
+    parser.add_argument('--moe_softmax_order', default='softmax_topk', type=str, choices=['softmax_topk', 'topk_softmax'])
+    parser.add_argument('--mlp_dim_exp_factor', default=4, type=int) # factor by which the MLP hidden size is increased in MoE layer
     parser.add_argument(
         "--multiple_of",  # make SwiGLU hidden layer size multiple of large power of 2
         default=256,

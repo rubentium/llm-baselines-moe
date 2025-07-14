@@ -30,7 +30,7 @@ def get_dataset(args) -> Dict[str, np.ndarray]:
         return {'train': train_data, 'val': val_data}
     if args.dataset == 'openwebtext2':
         return get_openwebtext2_data()
-    if args.dataset == "slimpajama":
+    if args.dataset == "stackexchange":
         return get_slimpajama_data()
     if args.dataset == "mathqa":
         return get_mathqa()
@@ -38,9 +38,10 @@ def get_dataset(args) -> Dict[str, np.ndarray]:
         raise NotImplementedError(f"Unknow dataset key '{args.dataset}'")
 
 class Dataset(torch.utils.data.Dataset):
-    def __init__(self, data, sequence_length):
+    def __init__(self, data, source_ids, sequence_length):
         super().__init__()
         self.data = data
+        self.source_ids = source_ids
         self.sequence_length = sequence_length
 
     def __len__(self):
@@ -54,13 +55,15 @@ class Dataset(torch.utils.data.Dataset):
         idx = idx * seq_length
         x = torch.from_numpy((self.data[idx : idx + seq_length]).astype(np.int64))
 
-        y = torch.from_numpy(
-            (self.data[idx + 1 : idx + 1 + seq_length]).astype(np.int64)
-        )
+        y = torch.from_numpy((self.data[idx + 1 : idx + 1 + seq_length]).astype(np.int64))
+
+        if self.source_ids is not np.array(None) and self.source_ids is not None: # dont replace this with 'is'
+            source_ids = torch.from_numpy((self.source_ids[idx : idx + seq_length]).astype(np.int64))
+            return x, y, source_ids
         return x, y
 
 
-def get_dataloader(data, sequence_length, batch_size, seed=0, distributed_backend=None):
+def get_dataloader(data, source_ids, sequence_length, batch_size, seed=0, distributed_backend=None):
     """Create a DataLoader for the given data. If distributed_backend is provided and is truly
     distributed (world size > 1), the DataLoader will be created with a DistributedSampler that
     splits the data across the processes (in conjunction with DDP).
@@ -68,7 +71,7 @@ def get_dataloader(data, sequence_length, batch_size, seed=0, distributed_backen
 
     Returns both the dataloader and the sampler.
     """
-    dataset = Dataset(data, sequence_length=sequence_length)
+    dataset = Dataset(data, source_ids, sequence_length=sequence_length)
     if distributed_backend and distributed_backend.get_world_size() > 1:
         sampler = torch.utils.data.DistributedSampler(
             dataset,
@@ -86,6 +89,6 @@ def get_dataloader(data, sequence_length, batch_size, seed=0, distributed_backen
         dataset,
         sampler=sampler,
         batch_size=batch_size,
-        num_workers=4,
+        num_workers=0,
     )
     return loader, sampler

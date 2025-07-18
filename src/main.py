@@ -44,9 +44,17 @@ def main(args):
     
     print(f"Loading dataset '{args.dataset}'")
     
-    data = get_dataset(args) # data is a dict: {'train': train_tokenized, 'val': eval_tokenized}
+    data = get_dataset(args) # data is a dict: {'train': train_tokenized, 'val': eval_tokenized, etc...}
     if args.data_in_ram:
-        data = {'train': np.array(data['train']), 'val': np.array(data['val']), 'source_ids':np.array(data['source_ids'])}
+        if "train_exp" in data:
+
+            data = {'train': np.array(data['train']), 'val': np.array(data['val']), 
+                    'train_exp_index': np.array(data['train_exp_index']),
+                    'val_exp_index': np.array(data['val_exp_index']),
+                    'train_exp': np.array(data['train_exp']), 
+                    'val_exp': np.array(data['val_exp'])}
+        else:
+            data = {'train': np.array(data['train']), 'val': np.array(data['val']), 'source_ids':np.array(data['train_source_ids'])}
         
     print(f"Num training tokens: {len(data['train'])}")
     print(f"Num validation tokens: {len(data['val'])}")
@@ -92,7 +100,7 @@ def main(args):
         del params_copy['device']
         wandb.init(project=args.wandb_project, name=exp_name, config=params_copy)
     
-    ckpt_path = os.path.join(args.results_base_folder, args.dataset, args.model, exp_name)
+    ckpt_path = os.path.join(args.results_base_folder, args.dataset, args.model, exp_name, args.run_id) if args.run_id else os.path.join(args.results_base_folder, args.dataset, args.model, exp_name)
     if not os.path.exists(ckpt_path):
         if distributed_backend.is_master_process():
             os.makedirs(ckpt_path)

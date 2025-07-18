@@ -21,7 +21,6 @@ def train_base(model, opt, data, data_seed, scheduler, iterations, acc_steps, ba
     substep = itr * acc_steps
     data["train"], train_sampler = get_dataloader(
         data["train"],
-        data["source_ids"],
         sequence_length=sequence_length,
         batch_size=batch_size,
         seed=data_seed,
@@ -86,7 +85,10 @@ def train_base(model, opt, data, data_seed, scheduler, iterations, acc_steps, ba
             
             with type_ctx:
                 with distributed_backend.get_context_for_microstep_forward(model=model, microstep_idx=microstep_idx, gradient_accumulation_steps=acc_steps):
-                    outputs = model(x, source_ids=source_ids, targets=y)
+                    outputs = model(x,
+                                    targets=y,
+                                    train_exp=data["train_exp"] if "train_exp" in data else None,
+                                    train_exp_index=data["train_exp_index"] if "train_exp_index" in data else)
 
             loss = outputs['loss'] / acc_steps
             loss.backward()

@@ -5,44 +5,73 @@ from datasets import load_dataset
 import os 
 
 
-SPJ_DATA_PATH = os.path.join(os.path.dirname(__file__), "datasets/combined_slimpajama_debug/")
+SPJ_DATA_PATH = os.path.join(os.path.dirname(__file__), "datasets/combined_slimpajama_debug_shuffled_new/")
 SPJ_CHUNK_1_DATA_PATH = os.path.join(SPJ_DATA_PATH, "chunk1")
 
 
 tknzr = tiktoken.get_encoding("gpt2")
 
 
-def get_slimpajama_data(num_proc=40):
+def get_slimpajama_data(num_proc=40, seed=1004, seq_len=518, run_id=None, top_k=1):
+    datasets_directory = "/mloscratch/homes/navasard/moe_doge/slimpajama_dbg"
+    
+    # Set random seed for reproducibility
+    np.random.seed(seed)
+    
     if not os.path.exists(os.path.join(SPJ_DATA_PATH, "train.bin")):
-        # Concatenate all train val files into one large file and also create source_ids
-        # which contains the index of the dataset in the original SlimPajama dataset
         os.makedirs(SPJ_DATA_PATH, exist_ok=True)
-        datasets_directory = "/mloscratch/homes/navasard/moe_doge/slimpajama_dbg"
-        datasets = [f for f in os.listdir(datasets_directory) if not os.path.isfile(os.path.join(datasets_directory, f))]
+        datasets = [f for f in os.listdir(datasets_directory) 
+                   if not os.path.isfile(os.path.join(datasets_directory, f))]
         splits = ['train', 'val']
 
         for split in splits:
             out_file = os.path.join(SPJ_DATA_PATH, f"{split}.bin")
             mem_data_list = []
             mem_len_list = []        
+            
+            # Load all datasets
             for i in range(len(datasets)):
-                data = np.memmap(os.path.join(datasets_directory, datasets[i], f"{split}.bin"), dtype=np.uint16, mode="r")
+                data = np.memmap(os.path.join(datasets_directory, datasets[i], f"{split}.bin"), 
+                                dtype=np.uint16, mode="r")
                 mem_data_list.append(data)
                 mem_len_list.append(len(data))
-            
-            out_mem = np.memmap(out_file, dtype=np.uint16, mode="w+", shape=(sum(mem_len_list)))
-            if split == 'train':
-                out_source_ids_file = os.path.join(SPJ_DATA_PATH, "source_ids.bin")
-                out_source_ids_mem = np.memmap(out_source_ids_file, dtype=np.uint16, mode="w+", shape=(sum(mem_len_list)))
 
-            index = 0
-            for i in range(len(datasets)):
-                out_mem[index:index + mem_len_list[i]] = mem_data_list[i]
-                if split == 'train':
-                    out_source_ids_mem[index:index + mem_len_list[i]] = np.full(mem_len_list[i], i, dtype=np.uint16)
-                index += mem_len_list[i]
+            sequences = []
+            source_ids = []
+            
+            for i in tqdm(range(len(datasets)), desc="Loading sequences"):
+                data = mem_data_list[i]
+                num_sequences = len(data) // seq_len
+                
+                for seq_idx in range(num_sequences):
+                    start = seq_idx * seq_len
+                    end = start + seq_len
+                    sequences.append(data[start:end])
+                    source_ids.append(i)  # Store source_id for each sequence
+            
+            # Create shuffle indices
+            shuffle_indices = np.arange(len(sequences))
+            np.random.shuffle(shuffle_indices)  # This uses the fixed seed
+            
+            # Write shuffled data
+            total_tokens = len(sequences) * seq_len
+            out_mem = np.memmap(out_file, dtype=np.uint16, mode="w+", shape=(total_tokens))
+            out_source_ids_file = os.path.join(SPJ_DATA_PATH, f"{split}_source_ids.bin")
+            out_source_ids_mem = np.memmap(out_source_ids_file, dtype=np.uint16, 
+                                            mode="w+", shape=(total_tokens))
+            
+            for i in tqdm(range(len(sequences)), desc=f"Writing shuffled data - {split}"):
+                # Get the shuffled index
+                shuffled_idx = shuffle_indices[i]
+                
+                # Write the sequence and its corresponding source_id
+                start = i * seq_len
+                end = start + seq_len
+                out_mem[start:end] = sequences[shuffled_idx]
+                out_source_ids_mem[start:end] = np.full(seq_len, source_ids[shuffled_idx], dtype=np.uint16)
 
             out_mem.flush()
+            out_source_ids_mem.flush()
 
     train_data = np.memmap(
         os.path.join(SPJ_DATA_PATH, "train.bin"), dtype=np.uint16, mode="r"
@@ -51,11 +80,44 @@ def get_slimpajama_data(num_proc=40):
         os.path.join(SPJ_DATA_PATH, "val.bin"), dtype=np.uint16, mode="r"
     )
 
-    source_ids = np.memmap(
-        os.path.join(SPJ_DATA_PATH, "source_ids.bin"), dtype=np.uint16, mode="r"
-    ) if os.path.exists(os.path.join(SPJ_DATA_PATH, "source_ids.bin")) else None
+    train_source_ids = np.memmap(
+        os.path.join(SPJ_DATA_PATH, "train_source_ids.bin"), dtype=np.uint16, mode="r"
+    ) if os.path.exists(os.path.join(SPJ_DATA_PATH, "train_source_ids.bin")) else None
 
-    return {"train": train_data, "val": val_data, 'source_ids': source_ids}
+    val_source_ids = np.memmap(
+        os.path.join(SPJ_DATA_PATH, "val_source_ids.bin"), dtype=np.uint16, mode="r"
+    ) if os.path.exists(os.path.join(SPJ_DATA_PATH, "val_source_ids.bin")) else None
+
+    # this is for logging the expert assignments
+    if run_id:
+        assert top_k >= 1, "top_k must be at least 1"
+        os.makedirs(os.path.join(os.path.dirname(__file__), f"expert_assignments/run_id_{run_id}"), exist_ok=True)
+        train_exprt_dir = os.path.join(os.path.dirname(__file__), f"expert_assignments/run_id_{run_id}", "train.bin")
+        val_exprt_dir = os.path.join(os.path.dirname(__file__), f"expert_assignments/run_id_{run_id}", "train.bin")
+
+        train_shape = (len(train_data), top_k) if top_k > 1 else (len(train_data),)
+        val_shape = (len(val_data), top_k) if top_k > 1 else (len(val_data),)
+
+        train_exprt_mem = np.memmap(train_exprt_dir, dtype=np.uint16, mode="w+", shape=train_shape)
+        train_exprt_mem[:] = np.full(train_shape, -1, dtype=np.uint16)  # Initialize train with -1
+
+        val_exprt_mem = np.memmap(val_exprt_dir, dtype=np.uint16, mode="w+", shape=val_shape)
+        val_exprt_mem[:] = np.full(train_shape, -1, dtype=np.uint16)  # Initialize val with -1
+        train_exprt_index, val_exprt_index = 0, 0
+
+        return {"train": train_data,
+                "val": val_data, 
+                "train_source_ids": train_source_ids, 
+                "val_source_ids": val_source_ids,
+                "train_exp": train_exprt_mem, 
+                "val_exp": val_exprt_mem,
+                "train_exp_index": train_exprt_index, 
+                "val_exp_index": val_exprt_index}
+    else:
+        return {"train": train_data, 
+                "val": val_data, 
+                "train_source_ids": train_source_ids, 
+                "val_source_ids": val_source_ids}
 
 
 def get_slimpajama_chunk1(num_proc=40):

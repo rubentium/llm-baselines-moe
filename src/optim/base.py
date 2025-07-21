@@ -70,7 +70,14 @@ def train_base(model, opt, data, data_seed, scheduler, iterations, acc_steps, ba
     for _ in range(substep % num_substeps_per_epoch):
         get_batch(data_train_iter, device=extra_args.device)
 
-    
+    train_exp_assignment=data["train_exp"] if "train_exp" in data else None
+    train_exp_assignment_index = data["train_exp_index"] if "train_exp_index" in data else None
+    val_exp_assignment = data["val_exp"] if "val_exp" in data else None
+    val_exp_assignment_index = data["val_exp_index"] if "val_exp_index" in data else None
+
+    train_token_loss = data["train_loss"] if "train_loss" in data else None
+    val_token_loss = data["val_loss"] if "val_loss" in data else None
+
     while itr < iterations:
 
         for microstep_idx in range(acc_steps):  # gradient accumulation
@@ -82,15 +89,26 @@ def train_base(model, opt, data, data_seed, scheduler, iterations, acc_steps, ba
                 x, y, source_ids = batch
             else:
                 raise ValueError(f"Unexpected batch format: {len(batch)} elements in batch")
-            
+
             with type_ctx:
                 with distributed_backend.get_context_for_microstep_forward(model=model, microstep_idx=microstep_idx, gradient_accumulation_steps=acc_steps):
                     outputs = model(x,
                                     targets=y,
-                                    train_exp=data["train_exp"] if "train_exp" in data else None,
-                                    train_exp_index=data["train_exp_index"] if "train_exp_index" in data else)
+                                    exp_assignment=train_exp_assignment,
+                                    exp_assignment_index=train_exp_assignment_index,
+                                    token_loss_tracker=train_token_loss 
+                                    )
 
-            loss = outputs['loss'] / acc_steps
+            train_exp_assignment, train_exp_assignment_index, train_token_loss = outputs["exp_assignment"], outputs["exp_assignment_index"], outputs["token_loss_tracker"]
+
+            atest_token_train = train_exp_assignment[train_exp_assignment_index-250:]
+            atest_token_train_loss = train_token_loss[train_exp_assignment_index-250:]
+            
+            if train_token_loss is not None:
+                loss = outputs['loss'].mean() / acc_steps
+            else:
+                loss = outputs['loss'] / acc_steps
+
             loss.backward()
             substep += 1
             if substep % len(data["train"]) == 0:
@@ -125,13 +143,15 @@ def train_base(model, opt, data, data_seed, scheduler, iterations, acc_steps, ba
                 eval_steps = (
                     24 if itr < iterations else len(data["val"])
                 )
-                val_acc, val_loss, val_perplexity = eval(
-                    model,
-                    data_val_iter,
-                    extra_args.device,
-                    max_num_batches=eval_steps,
-                    ctx=type_ctx,
-                )
+                val_acc, val_loss, val_perplexity, val_exp_assignment, val_exp_assignment_index, val_token_loss = eval( model,
+                                                                                                        data_val_iter,
+                                                                                                        device=extra_args.device,
+                                                                                                        max_num_batches=eval_steps,
+                                                                                                        ctx=type_ctx,
+                                                                                                        exp_assignment=val_exp_assignment,
+                                                                                                        exp_assignment_index=val_exp_assignment_index,
+                                                                                                        token_loss_tracker=val_token_loss,
+                                                                                    )
 
                 print_string = f"{epoch}/{itr} [train] loss={train_loss:.3f} [val] loss={val_loss:.3f}, pp={val_perplexity:.2f}, acc={val_acc:3f}"
                 print_string += f" [time per itr] {dt*1000/eval_freq:.2f}ms"

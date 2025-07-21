@@ -166,7 +166,7 @@ class GPTBase(nn.Module):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
-    def forward(self, idx, source_ids=None, targets=None, get_logits=False, exp_assignment=None, exp_assignment_index=None):
+    def forward(self, idx, source_ids=None, targets=None, get_logits=False, exp_assignment=None, exp_assignment_index=None, token_loss_tracker=None):
         device = idx.device
         b, t = idx.size()
         assert t <= self.config.sequence_length, f"Cannot forward sequence of length {t}, block size is only {self.config.sequence_length}"
@@ -179,8 +179,8 @@ class GPTBase(nn.Module):
         x = self.transformer.drop(tok_emb + moe_emb + pos_emb)
         # x = self.transformer.drop(tok_emb + pos_emb)
         # writing the selected tokens into the expert assignment memory
-        if exp_assignment and exp_assignment_index:
-            exp_assignment[exp_assignment_index:exp_assignment_index + b * t] = logits_and_experts["selected_experts"]
+        if exp_assignment is not None and exp_assignment_index is not None:
+            exp_assignment[exp_assignment_index:exp_assignment_index + b * t] = logits_and_experts["selected_experts"].squeeze().cpu().numpy()
             exp_assignment_index += b * t
             exp_assignment.flush()
 
@@ -191,13 +191,19 @@ class GPTBase(nn.Module):
         if targets is not None:
             # if we are given some desired targets also calculate the loss
             logits = self.lm_head(x)
-            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
+            if token_loss_tracker is not None:
+                # if we are given a token loss array, write the loss into it
+                loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1, reduction='none')
+                token_loss_tracker[exp_assignment_index - b * t:exp_assignment_index] = loss.cpu().detach().numpy()
+                token_loss_tracker.flush()
+            else: 
+                loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
         else:
             # inference-time mini-optimization: only forward the lm_head on the very last position
             logits = self.lm_head(x[:, [-1], :]) # note: using list [-1] to preserve the time dim
             loss = None
         logits = logits if get_logits else None
-        return {'logits': logits, 'loss': loss}
+        return {'logits': logits, 'loss': loss, "exp_assignment_index":exp_assignment_index,"exp_assignment":exp_assignment, "token_loss_tracker": token_loss_tracker}
 
     def crop_sequence_length(self, sequence_length):
         # model surgery to decrease the block size if necessary

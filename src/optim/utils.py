@@ -29,7 +29,7 @@ def get_batch(dataloader, device="cpu"):
 
 
 @torch.no_grad()
-def eval(model, data_val_iter, device='cpu', max_num_batches=24, ctx=nullcontext()):
+def eval(model, data_val_iter, exp_assignment, exp_assignment_index, device='cpu', max_num_batches=24, ctx=nullcontext(), token_loss_tracker=None):
     assert model.training == False
 
     loss_list_val, acc_list = [], []
@@ -37,16 +37,24 @@ def eval(model, data_val_iter, device='cpu', max_num_batches=24, ctx=nullcontext
     for _ in range(max_num_batches): 
         x, y = get_batch(data_val_iter, device=device)
         with ctx:
-            outputs = model(x, targets=y, get_logits=True)
-        val_loss = outputs['loss']
+            outputs = model(x, targets=y, get_logits=True, 
+                            exp_assignment=exp_assignment,
+                            exp_assignment_index=exp_assignment_index,
+                            token_loss_tracker=token_loss_tracker)
+        if token_loss_tracker is not None:
+            val_loss = outputs['loss'].mean()
+        else:
+            val_loss = outputs['loss']
         loss_list_val.append(val_loss)
         acc_list.append((outputs['logits'].argmax(-1) == y).float().mean())
-
+        
+        exp_assignment, exp_assignment_index, token_loss_tracker = outputs["exp_assignment"], outputs["exp_assignment_index"], outputs["token_loss_tracker"]
+   
     val_acc = torch.stack(acc_list).mean().item()
     val_loss = torch.stack(loss_list_val).mean().item()
     val_perplexity = 2.71828 ** val_loss
 
-    return val_acc, val_loss, val_perplexity
+    return val_acc, val_loss, val_perplexity, exp_assignment, exp_assignment_index, token_loss_tracker
 
 
 def save_checkpoint(distributed_backend, model, opt, scheduler, itr, ckpt_path, **extra_args):

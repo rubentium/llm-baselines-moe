@@ -31,7 +31,11 @@ def get_dataset(args) -> Dict[str, np.ndarray]:
     if args.dataset == 'openwebtext2':
         return get_openwebtext2_data()
     if args.dataset == "slimpajama":
-        return get_slimpajama_data(seq_len=args.sequence_length, run_id=args.run_id)
+        return get_slimpajama_data(seq_len=args.sequence_length, 
+                                   run_id=args.run_id,
+                                   batch_size=args.batch_size, 
+                                   acc_steps=args.acc_steps,
+                                   iterations=args.iterations)
     if args.dataset == "mathqa":
         return get_mathqa()
     else:
@@ -75,7 +79,7 @@ def get_dataloader(data, sequence_length, batch_size, seed=0, source_ids=None, d
     if distributed_backend and distributed_backend.get_world_size() > 1:
         sampler = torch.utils.data.DistributedSampler(
             dataset,
-            shuffle=True,
+            shuffle=False, # do not shuffle the slimpajama dataset the order is used for expert assignment, the original datset is already shuffled
             seed=seed,
         )
     else:

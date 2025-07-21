@@ -5,15 +5,15 @@ from datasets import load_dataset
 import os 
 
 
-SPJ_DATA_PATH = os.path.join(os.path.dirname(__file__), "datasets/combined_slimpajama_debug_shuffled_new/")
+SPJ_DATA_PATH = os.path.join(os.path.dirname(__file__), "datasets/combined_slimpajama_debug_shuffled_full/")
 SPJ_CHUNK_1_DATA_PATH = os.path.join(SPJ_DATA_PATH, "chunk1")
 
 
 tknzr = tiktoken.get_encoding("gpt2")
 
 
-def get_slimpajama_data(num_proc=40, seed=1004, seq_len=518, run_id=None, top_k=1):
-    datasets_directory = "/mloscratch/homes/navasard/moe_doge/slimpajama_dbg"
+def get_slimpajama_data(seq_len, batch_size, acc_steps, iterations, run_id=None, top_k=1, seed=1004):
+    datasets_directory = "/mloscratch/homes/navasard/moe_doge/slimpajama"
     
     # Set random seed for reproducibility
     np.random.seed(seed)
@@ -93,17 +93,32 @@ def get_slimpajama_data(num_proc=40, seed=1004, seq_len=518, run_id=None, top_k=
         assert top_k >= 1, "top_k must be at least 1"
         os.makedirs(os.path.join(os.path.dirname(__file__), f"expert_assignments/run_id_{run_id}"), exist_ok=True)
         train_exprt_dir = os.path.join(os.path.dirname(__file__), f"expert_assignments/run_id_{run_id}", "train.bin")
-        val_exprt_dir = os.path.join(os.path.dirname(__file__), f"expert_assignments/run_id_{run_id}", "train.bin")
+        val_exprt_dir = os.path.join(os.path.dirname(__file__), f"expert_assignments/run_id_{run_id}", "val.bin")
 
-        train_shape = (len(train_data), top_k) if top_k > 1 else (len(train_data),)
+        train_len = batch_size * acc_steps * seq_len * iterations # to save on memory only allocate memory for training token-expert assignments
+        train_shape = (train_len, top_k) if top_k > 1 else (train_len,)
         val_shape = (len(val_data), top_k) if top_k > 1 else (len(val_data),)
 
-        train_exprt_mem = np.memmap(train_exprt_dir, dtype=np.uint16, mode="w+", shape=train_shape)
-        train_exprt_mem[:] = np.full(train_shape, -1, dtype=np.uint16)  # Initialize train with -1
+        # Create memmap for train and val expert assignments
+        train_exprt_mem = np.memmap(train_exprt_dir, dtype=np.int8, mode="w+", shape=train_shape)
+        train_exprt_mem[:] = np.full(train_shape, -1, dtype=np.int8)  # Initialize train with -1
+        train_exprt_mem.flush()
 
-        val_exprt_mem = np.memmap(val_exprt_dir, dtype=np.uint16, mode="w+", shape=val_shape)
-        val_exprt_mem[:] = np.full(train_shape, -1, dtype=np.uint16)  # Initialize val with -1
+        val_exprt_mem = np.memmap(val_exprt_dir, dtype=np.int8, mode="w+", shape=val_shape)
+        val_exprt_mem[:] = np.full(val_shape, -1, dtype=np.int8)  # Initialize val with -1
+        val_exprt_mem.flush()
         train_exprt_index, val_exprt_index = 0, 0
+
+        # Create memmap for train and val loss
+        train_loss = np.memmap(os.path.join(os.path.dirname(__file__), f"expert_assignments/run_id_{run_id}", "train_loss.bin"), 
+                                    dtype=np.float32, mode="w+", shape=train_shape)
+        train_loss[:] = np.full(train_shape, -1.0, dtype=np.float32)  # Initialize train_loss with -1.0
+        train_loss.flush()
+
+        val_loss = np.memmap(os.path.join(os.path.dirname(__file__), f"expert_assignments/run_id_{run_id}", "val_loss.bin"), 
+                                    dtype=np.float32, mode="w+", shape=val_shape)
+        val_loss[:] = np.full(val_shape, -1.0, dtype=np.float32)  # Initialize val_loss with -1.0
+        val_loss.flush()
 
         return {"train": train_data,
                 "val": val_data, 
@@ -112,7 +127,9 @@ def get_slimpajama_data(num_proc=40, seed=1004, seq_len=518, run_id=None, top_k=
                 "train_exp": train_exprt_mem, 
                 "val_exp": val_exprt_mem,
                 "train_exp_index": train_exprt_index, 
-                "val_exp_index": val_exprt_index}
+                "val_exp_index": val_exprt_index,
+                "train_loss": train_loss,
+                "val_loss": val_loss}
     else:
         return {"train": train_data, 
                 "val": val_data, 
@@ -176,3 +193,5 @@ def get_slimpajama_chunk1(num_proc=40):
     )
 
     return {"train": train_data, "val": val_data}
+
+get_slimpajama_data(512, 32, 1, 10)

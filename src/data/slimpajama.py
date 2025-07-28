@@ -4,15 +4,15 @@ import tiktoken
 from datasets import load_dataset
 import os 
 
-
-SPJ_DATA_PATH = os.path.join(os.path.dirname(__file__), "datasets/combined_slimpajama_debug_shuffled_full/")
+BASE_PATH = "/mloscratch/homes/navasard/moe_doge/"
+SPJ_DATA_PATH = os.path.join(BASE_PATH, "datasets/combined_slimpajama_debug_shuffled_full/")
 SPJ_CHUNK_1_DATA_PATH = os.path.join(SPJ_DATA_PATH, "chunk1")
 
 
 tknzr = tiktoken.get_encoding("gpt2")
 
 
-def get_slimpajama_data(seq_len, batch_size, acc_steps, iterations, run_id=None, top_k=1, seed=1004):
+def get_slimpajama_data(seq_len, batch_size, acc_steps, iterations, eval_freq, run_id=None, top_k=1, seed=1004):
     datasets_directory = "/mloscratch/homes/navasard/moe_doge/slimpajama"
     
     # Set random seed for reproducibility
@@ -91,13 +91,17 @@ def get_slimpajama_data(seq_len, batch_size, acc_steps, iterations, run_id=None,
     # this is for logging the expert assignments
     if run_id:
         assert top_k >= 1, "top_k must be at least 1"
-        os.makedirs(os.path.join(os.path.dirname(__file__), f"expert_assignments/run_id_{run_id}"), exist_ok=True)
-        train_exprt_dir = os.path.join(os.path.dirname(__file__), f"expert_assignments/run_id_{run_id}", "train.bin")
-        val_exprt_dir = os.path.join(os.path.dirname(__file__), f"expert_assignments/run_id_{run_id}", "val.bin")
+        os.makedirs(os.path.join(BASE_PATH, f"expert_assignments/run_id_{run_id}"), exist_ok=True)
+        train_exprt_dir = os.path.join(BASE_PATH, f"expert_assignments/run_id_{run_id}", "train.bin")
+        val_exprt_dir = os.path.join(BASE_PATH, f"expert_assignments/run_id_{run_id}", "val.bin")
 
         train_len = batch_size * acc_steps * seq_len * iterations # to save on memory only allocate memory for training token-expert assignments
         train_shape = (train_len, top_k) if top_k > 1 else (train_len,)
-        val_shape = (len(val_data), top_k) if top_k > 1 else (len(val_data),)
+
+        assert iterations % eval_freq == 0, "Iterations must be divisible by eval_freq"
+        max_num_batches = 24 # same as in eval in utils in optim folder
+        val_len = int(batch_size * max_num_batches * seq_len * (iterations / eval_freq - 1))
+        val_shape = (val_len*2, top_k) if top_k > 1 else (val_len*2,)
 
         # Create memmap for train and val expert assignments
         train_exprt_mem = np.memmap(train_exprt_dir, dtype=np.int8, mode="w+", shape=train_shape)
@@ -110,18 +114,18 @@ def get_slimpajama_data(seq_len, batch_size, acc_steps, iterations, run_id=None,
         train_exprt_index, val_exprt_index = 0, 0
 
         # Create memmap for train and val loss
-        train_loss = np.memmap(os.path.join(os.path.dirname(__file__), f"expert_assignments/run_id_{run_id}", "train_loss.bin"), 
+        train_loss = np.memmap(os.path.join(BASE_PATH, f"expert_assignments/run_id_{run_id}", "train_loss.bin"), 
                                     dtype=np.float32, mode="w+", shape=train_shape)
         train_loss[:] = np.full(train_shape, -1.0, dtype=np.float32)  # Initialize train_loss with -1.0
         train_loss.flush()
 
-        val_loss = np.memmap(os.path.join(os.path.dirname(__file__), f"expert_assignments/run_id_{run_id}", "val_loss.bin"), 
+        val_loss = np.memmap(os.path.join(BASE_PATH, f"expert_assignments/run_id_{run_id}", "val_loss.bin"), 
                                     dtype=np.float32, mode="w+", shape=val_shape)
         val_loss[:] = np.full(val_shape, -1.0, dtype=np.float32)  # Initialize val_loss with -1.0
         val_loss.flush()
 
-        return {"train": train_data,
-                "val": val_data, 
+        return {"train": train_data[:train_len+1],
+                "val": val_data[:val_len+1], 
                 "train_source_ids": train_source_ids, 
                 "val_source_ids": val_source_ids,
                 "train_exp": train_exprt_mem, 
@@ -193,5 +197,3 @@ def get_slimpajama_chunk1(num_proc=40):
     )
 
     return {"train": train_data, "val": val_data}
-
-get_slimpajama_data(512, 32, 1, 10)

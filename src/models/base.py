@@ -15,6 +15,7 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 from .moe import MoE, ExpertChoiceMoE, MOE_MLP
+from.aux_losses import entropy_reg, load_balancing_loss, router_z_loss
 
 
 class LayerNorm(nn.Module):
@@ -119,7 +120,14 @@ class GPTBase(nn.Module):
         assert config.sequence_length is not None
         self.config = config
         self.tokenizer = tiktoken.get_encoding("gpt2")
-        self.expert_routing = MoE(config, MOE_MLP)
+
+        if config.moe_num_experts > 0:
+            if config.moe_type == "token_choice":
+                self.expert_routing = MoE(config, MOE_MLP)
+            elif config.moe_type == "expert_choice":
+                self.expert_routing = ExpertChoiceMoE(config, MOE_MLP)
+            else:   
+                raise ValueError("Check your MOE type token_choice or expert_choice")
 
         self.transformer = nn.ModuleDict(dict(
             wte = nn.Embedding(config.vocab_size, config.n_embd),
@@ -174,19 +182,29 @@ class GPTBase(nn.Module):
 
         # forward the GPT model itself
         tok_emb = self.transformer.wte(idx) # token embeddings of shape (b, t, n_embd)
-        moe_emb, logits_and_experts = self.expert_routing(tok_emb)
         pos_emb = self.transformer.wpe(pos) # position embeddings of shape (1, t, n_embd)
-        x = self.transformer.drop(tok_emb + moe_emb + pos_emb)
-        # x = self.transformer.drop(tok_emb + pos_emb)
-        # writing the selected tokens into the expert assignment memory
-        if exp_assignment is not None and exp_assignment_index is not None:
-            exp_assignment[exp_assignment_index:exp_assignment_index + b * t] = logits_and_experts["selected_experts"].squeeze().cpu().numpy()
-            exp_assignment_index += b * t
-            exp_assignment.flush()
+
+        # front or back placement of moe layer
+        if self.config.moe_front:
+            moe_emb, logits_and_experts = self.expert_routing(tok_emb)
+            x = self.transformer.drop(tok_emb + moe_emb + pos_emb)
+        else:
+            x = self.transformer.drop(tok_emb + pos_emb)
 
         for block in self.transformer.h:
             x = block(x)
+        
+        if not self.config.moe_front:
+            x, logits_and_experts = self.expert_routing(x)
+
         x = self.transformer.ln_f(x)
+        # writing the selected tokens into the expert assignment memory
+        # if exp_assignment is not None and exp_assignment_index is not None:
+        if exp_assignment is not None and exp_assignment_index is not None:
+            ids = exp_assignment_index[0]
+            exp_assignment[ids:ids + b * t] = logits_and_experts["selected_experts"].squeeze().cpu().numpy()
+            exp_assignment_index[0] += b * t
+            exp_assignment.flush()
 
         if targets is not None:
             # if we are given some desired targets also calculate the loss
@@ -194,15 +212,32 @@ class GPTBase(nn.Module):
             if token_loss_tracker is not None:
                 # if we are given a token loss array, write the loss into it
                 loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1, reduction='none')
-                token_loss_tracker[exp_assignment_index - b * t:exp_assignment_index] = loss.cpu().detach().numpy()
+                token_loss_tracker[ids:ids + b * t] = loss.cpu().detach().numpy()
                 token_loss_tracker.flush()
             else: 
                 loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
+
+            if self.config.moe_num_experts > 0:
+                if self.config.moe_type == "token_choice":
+                    # calculate the router losses per layer
+                    logit, chosen_experts = logits_and_experts["router_logits"], logits_and_experts["selected_experts"]
+                    router_losses = self.get_router_losses(
+                        logit, chosen_experts, eval=not self.training
+                    )
+                    aux_losses = {}
+                    for k, v in router_losses.items():
+                        aux_losses[k] = v
+                        if self.training:
+                            loss += (
+                                v
+                                * getattr(self.config, k + "_factor")
+                            )
         else:
             # inference-time mini-optimization: only forward the lm_head on the very last position
             logits = self.lm_head(x[:, [-1], :]) # note: using list [-1] to preserve the time dim
             loss = None
         logits = logits if get_logits else None
+        # assert b == 32, "Batch size should be 32, but got {}".format(b)
         return {'logits': logits, 'loss': loss, "exp_assignment_index":exp_assignment_index,"exp_assignment":exp_assignment, "token_loss_tracker": token_loss_tracker}
 
     def crop_sequence_length(self, sequence_length):
@@ -214,6 +249,30 @@ class GPTBase(nn.Module):
         self.transformer.wpe.weight = nn.Parameter(self.transformer.wpe.weight[:sequence_length])
         for block in self.transformer.h:
             block.attn.bias = block.attn.bias[:,:,:sequence_length,:sequence_length]
+
+    def get_router_losses(self, logits, selected_experts, eval=False):
+        # logits: (b * seq_len, n_experts)
+        # selected_experts: (b * seq_len, topk)
+        if eval:  # eval mode, compute all losses
+            return {
+                "moe_entropy_loss": entropy_reg(logits),
+                "moe_aux_loss": load_balancing_loss(logits, selected_experts),
+                "moe_z_loss": router_z_loss(logits),
+            }
+        if self.config.moe_router_loss == "entropy":
+            return {
+                "moe_entropy_loss": entropy_reg(logits),
+            }
+        elif self.config.moe_router_loss == "load_balancing_only":
+            return {
+                "moe_aux_loss": load_balancing_loss(logits, selected_experts),
+            }
+        elif self.config.moe_router_loss == "load_balancing_z_loss":
+            return {
+                "moe_aux_loss": load_balancing_loss(logits, selected_experts),
+                "moe_z_loss": router_z_loss(logits),
+            }
+        return {}
 
     @classmethod
     def from_pretrained(cls, model_type, override_args=None):

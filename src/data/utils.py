@@ -35,7 +35,8 @@ def get_dataset(args) -> Dict[str, np.ndarray]:
                                    run_id=args.run_id,
                                    batch_size=args.batch_size, 
                                    acc_steps=args.acc_steps,
-                                   iterations=args.iterations)
+                                   iterations=args.iterations,
+                                   eval_freq=args.eval_freq,)
     if args.dataset == "mathqa":
         return get_mathqa()
     else:
@@ -94,5 +95,6 @@ def get_dataloader(data, sequence_length, batch_size, seed=0, source_ids=None, d
         sampler=sampler,
         batch_size=batch_size,
         num_workers=0,
+        # drop_last=True
     )
     return loader, sampler

@@ -47,7 +47,6 @@ def main(args):
     data = get_dataset(args) # data is a dict: {'train': train_tokenized, 'val': eval_tokenized, etc...}
     if args.data_in_ram:
         if "train_exp" in data:
-
             data = {'train': np.array(data['train']), 'val': np.array(data['val']), 
                     'train_exp_index': np.array(data['train_exp_index']),
                     'val_exp_index': np.array(data['val_exp_index']),
@@ -153,7 +152,7 @@ def main(args):
     stats = train(model, opt, data, args.data_seed, scheduler, args.iterations, args.acc_steps, args.batch_size, args.sequence_length, 
                   eval_freq=args.eval_freq, 
                   distributed_backend=distributed_backend,
-                  ckpt_path=f"{ckpt_path}/ckpt.pt", itr=itr, rng_state_dict=rng_state_dict, extra_args=args)
+                  ckpt_path=f"{ckpt_path}/ckpt.pt", itr=itr, rng_state_dict=rng_state_dict, extra_args=args, run_id=args.run_id)
     
     args.device = None
     args.dtype = None

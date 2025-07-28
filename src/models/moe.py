@@ -84,14 +84,15 @@ class ExpertChoiceMoE(nn.Module):
             [mlp(config=config) for _ in range(config.moe_num_experts)]
         )
         self.router = nn.Linear(config.n_embd, config.moe_num_experts, bias=False)
-        self.capacity_factor = config.capacity_factor
-        self.softmax_order = config.moe_softmax_order
-        self.top_k = int(
-            self.capacity_factor
-            * config.batch_size
-            * config.sequence_length
-            / config.moe_num_experts
-        )
+        self.capacity_factor = 1.1 * config.moe_num_experts / (config.batch_size * config.sequence_length) # Setting top k to be equal to 1
+        self.softmax_order = config.moe_softmax_order 
+        self.top_k = 1
+        # self.top_k = int(
+        #     self.capacity_factor
+        #     * config.batch_size
+        #     * config.sequence_length
+        #     / config.moe_num_experts
+        # )
 
     def forward(self, inputs: torch.Tensor):
         # [batch_size * sequence_length, n_embd]

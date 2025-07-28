@@ -13,7 +13,7 @@ import numpy as np
 from .utils import eval, get_batch, save_checkpoint
 
 
-def train_base(model, opt, data, data_seed, scheduler, iterations, acc_steps, batch_size, sequence_length, eval_freq, ckpt_path, distributed_backend,extra_args, itr=0,rng_state_dict=None):
+def train_base(model, opt, data, data_seed, scheduler, iterations, acc_steps, batch_size, sequence_length, eval_freq, ckpt_path, distributed_backend, extra_args, itr=0, rng_state_dict=None, run_id=None):
     device_type = 'cuda' if 'cuda' in str(extra_args.device) else 'cpu'
     type_ctx = nullcontext() if device_type == 'cpu' else torch.amp.autocast(
         device_type=device_type, dtype=torch.bfloat16)  # extra_args.dtype)
@@ -71,9 +71,9 @@ def train_base(model, opt, data, data_seed, scheduler, iterations, acc_steps, ba
         get_batch(data_train_iter, device=extra_args.device)
 
     train_exp_assignment=data["train_exp"] if "train_exp" in data else None
-    train_exp_assignment_index = data["train_exp_index"] if "train_exp_index" in data else None
+    train_exp_assignment_index = [data["train_exp_index"]] if "train_exp_index" in data else None
     val_exp_assignment = data["val_exp"] if "val_exp" in data else None
-    val_exp_assignment_index = data["val_exp_index"] if "val_exp_index" in data else None
+    val_exp_assignment_index = [data["val_exp_index"]] if "val_exp_index" in data else None
 
     train_token_loss = data["train_loss"] if "train_loss" in data else None
     val_token_loss = data["val_loss"] if "val_loss" in data else None
@@ -96,13 +96,10 @@ def train_base(model, opt, data, data_seed, scheduler, iterations, acc_steps, ba
                                     targets=y,
                                     exp_assignment=train_exp_assignment,
                                     exp_assignment_index=train_exp_assignment_index,
-                                    token_loss_tracker=train_token_loss 
+                                    token_loss_tracker=train_token_loss,
                                     )
 
             train_exp_assignment, train_exp_assignment_index, train_token_loss = outputs["exp_assignment"], outputs["exp_assignment_index"], outputs["token_loss_tracker"]
-
-            atest_token_train = train_exp_assignment[train_exp_assignment_index-250:]
-            atest_token_train_loss = train_token_loss[train_exp_assignment_index-250:]
             
             if train_token_loss is not None:
                 loss = outputs['loss'].mean() / acc_steps
@@ -184,7 +181,8 @@ def train_base(model, opt, data, data_seed, scheduler, iterations, acc_steps, ba
                             extra_args.eval_seq_prefix, max_new_tokens=40, temperature=0.9, top_k=None)
                         text_table.add_data(itr, val_perplexity, out_str)
                         # why a copy? see github.com/wandb/wandb/issues/2981
-                        wandb.log({f"generated-text-{wandb.run.name}": copy.copy(text_table)})
+                        name = run_id if run_id is not None else wandb.run.name
+                        wandb.log({f"generated-text-{name}"[:40]: copy.copy(text_table)})
 
                 model.train()
                 t0 = time.time()

@@ -1,0 +1,124 @@
+=== Cluster Sizes (Total Tokens per Expert, including duplicates) ===
+Expert  0: 890,033,282 tokens
+Expert  1: 1,997,990,664 tokens
+Expert  2: 737,901,721 tokens
+Expert  3: 743,897,757 tokens
+Expert  4: 728,087,550 tokens
+Expert  5: 726,350,989 tokens
+Expert  6: 729,338,037 tokens
+
+=== P(Source | Expert): Where each expert's tokens came from ===
+Expert  0 (total 890,033,282 tokens):
+  From Source  0:   5.05% (44,962,965)
+  From Source 65537:   7.06% (62,877,917)
+  From Source 131074:   4.79% (42,672,519)
+  From Source 196611:   4.01% (35,653,914)
+  From Source 262148:  25.47% (226,653,611)
+  From Source 327685:   4.07% (36,225,147)
+  From Source 393222:  49.55% (440,987,209)
+Expert  1 (total 1,997,990,664 tokens):
+  From Source  0:   5.06% (101,015,558)
+  From Source 65537:   7.05% (140,830,890)
+  From Source 131074:   4.81% (96,060,969)
+  From Source 196611:   4.01% (80,163,638)
+  From Source 262148:  25.46% (508,776,352)
+  From Source 327685:   4.08% (81,550,327)
+  From Source 393222:  49.53% (989,592,930)
+Expert  2 (total 737,901,721 tokens):
+  From Source  0:   5.05% (37,233,771)
+  From Source 65537:   7.06% (52,114,902)
+  From Source 131074:   4.80% (35,426,982)
+  From Source 196611:   4.01% (29,607,180)
+  From Source 262148:  25.45% (187,781,439)
+  From Source 327685:   4.08% (30,107,237)
+  From Source 393222:  49.55% (365,630,210)
+Expert  3 (total 743,897,757 tokens):
+  From Source  0:   5.05% (37,565,170)
+  From Source 65537:   7.05% (52,471,165)
+  From Source 131074:   4.80% (35,673,729)
+  From Source 196611:   4.01% (29,813,979)
+  From Source 262148:  25.46% (189,405,603)
+  From Source 327685:   4.08% (30,349,678)
+  From Source 393222:  49.55% (368,618,433)
+Expert  4 (total 728,087,550 tokens):
+  From Source  0:   5.05% (36,741,950)
+  From Source 65537:   7.05% (51,345,404)
+  From Source 131074:   4.80% (34,975,683)
+  From Source 196611:   4.01% (29,192,060)
+  From Source 262148:  25.46% (185,395,370)
+  From Source 327685:   4.08% (29,705,736)
+  From Source 393222:  49.55% (360,731,347)
+Expert  5 (total 726,350,989 tokens):
+  From Source  0:   5.05% (36,649,684)
+  From Source 65537:   7.05% (51,240,395)
+  From Source 131074:   4.79% (34,822,338)
+  From Source 196611:   4.01% (29,145,998)
+  From Source 262148:  25.46% (184,945,267)
+  From Source 327685:   4.08% (29,620,485)
+  From Source 393222:  49.55% (359,926,822)
+Expert  6 (total 729,338,037 tokens):
+  From Source  0:   5.04% (36,787,702)
+  From Source 65537:   7.06% (51,467,615)
+  From Source 131074:   4.80% (34,972,068)
+  From Source 196611:   4.01% (29,252,287)
+  From Source 262148:  25.46% (185,703,094)
+  From Source 327685:   4.07% (29,678,510)
+  From Source 393222:  49.56% (361,476,761)
+
+=== P(Expert | Source): Where each source's tokens were routed ===
+Source  0 (total 330,956,800 tokens):
+  To Expert  0:  13.59% (44,962,965)
+  To Expert  1:  30.52% (101,015,558)
+  To Expert  2:  11.25% (37,233,771)
+  To Expert  3:  11.35% (37,565,170)
+  To Expert  4:  11.10% (36,741,950)
+  To Expert  5:  11.07% (36,649,684)
+  To Expert  6:  11.12% (36,787,702)
+Source 65537 (total 462,348,288 tokens):
+  To Expert  0:  13.60% (62,877,917)
+  To Expert  1:  30.46% (140,830,890)
+  To Expert  2:  11.27% (52,114,902)
+  To Expert  3:  11.35% (52,471,165)
+  To Expert  4:  11.11% (51,345,404)
+  To Expert  5:  11.08% (51,240,395)
+  To Expert  6:  11.13% (51,467,615)
+Source 131074 (total 314,604,288 tokens):
+  To Expert  0:  13.56% (42,672,519)
+  To Expert  1:  30.53% (96,060,969)
+  To Expert  2:  11.26% (35,426,982)
+  To Expert  3:  11.34% (35,673,729)
+  To Expert  4:  11.12% (34,975,683)
+  To Expert  5:  11.07% (34,822,338)
+  To Expert  6:  11.12% (34,972,068)
+Source 196611 (total 262,829,056 tokens):
+  To Expert  0:  13.57% (35,653,914)
+  To Expert  1:  30.50% (80,163,638)
+  To Expert  2:  11.26% (29,607,180)
+  To Expert  3:  11.34% (29,813,979)
+  To Expert  4:  11.11% (29,192,060)
+  To Expert  5:  11.09% (29,145,998)
+  To Expert  6:  11.13% (29,252,287)
+Source 262148 (total 1,668,660,736 tokens):
+  To Expert  0:  13.58% (226,653,611)
+  To Expert  1:  30.49% (508,776,352)
+  To Expert  2:  11.25% (187,781,439)
+  To Expert  3:  11.35% (189,405,603)
+  To Expert  4:  11.11% (185,395,370)
+  To Expert  5:  11.08% (184,945,267)
+  To Expert  6:  11.13% (185,703,094)
+Source 327685 (total 267,237,120 tokens):
+  To Expert  0:  13.56% (36,225,147)
+  To Expert  1:  30.52% (81,550,327)
+  To Expert  2:  11.27% (30,107,237)
+  To Expert  3:  11.36% (30,349,678)
+  To Expert  4:  11.12% (29,705,736)
+  To Expert  5:  11.08% (29,620,485)
+  To Expert  6:  11.11% (29,678,510)
+Source 393222 (total 3,246,963,712 tokens):
+  To Expert  0:  13.58% (440,987,209)
+  To Expert  1:  30.48% (989,592,930)
+  To Expert  2:  11.26% (365,630,210)
+  To Expert  3:  11.35% (368,618,433)
+  To Expert  4:  11.11% (360,731,347)
+  To Expert  5:  11.09% (359,926,822)
+  To Expert  6:  11.13% (361,476,761)

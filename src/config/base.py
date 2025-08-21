@@ -48,13 +48,12 @@ def parse_args(base_parser, args, namespace):
     parser.add_argument('--moe_num_experts', default=7, type=int) # numv of experts in MoE layer
     parser.add_argument('--moe_num_experts_per_tok', default=1, type=int)
     parser.add_argument('--moe_softmax_order', default='softmax_topk', type=str, choices=['softmax_topk', 'topk_softmax'])
-    parser.add_argument('--moe_type', default='expert_choice', type=str, choices=['token_choice', 'expert_choice'])
+    parser.add_argument('--moe_type', default='token_choice', type=str, choices=['token_choice', 'expert_choice'])
     parser.add_argument('--mlp_dim_exp_factor', default=4, type=int) # factor by which the MLP hidden size is increased in MoE layer
     parser.add_argument('--moe_entropy_loss_factor', default=0.001, type=float)
     parser.add_argument('--moe_aux_loss_factor', default=0.01, type=float)
     parser.add_argument('--moe_z_loss_factor', default=0.001, type=float)
     parser.add_argument('--moe_router_loss', default='load_balancing_only', type=str, choices=['entropy', 'load_balancing_only', 'load_balancing_z_loss'])
-    parser.add_argument('--moe_front', action='store_false') # if true then MoE layer is placed in front of the transformer blocks, otherwise at the end
     parser.add_argument('--multiple_of',  # make SwiGLU hidden layer size multiple of large power of 2
         default=256,
         type=int,

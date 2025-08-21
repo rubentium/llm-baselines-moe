@@ -99,16 +99,17 @@ class MLP(nn.Module):
 
 class Block(nn.Module):
 
-    def __init__(self, config):
+    def __init__(self, config, moe=False):
         super().__init__()
         self.ln_1 = LayerNorm(config.n_embd, bias=config.bias)
         self.attn = CausalSelfAttention(config)
         self.ln_2 = LayerNorm(config.n_embd, bias=config.bias)
-        self.mlp = MLP(config)
+        self.mlp = MLP(config) if not moe else None
 
     def forward(self, x):
         x = x + self.attn(self.ln_1(x))
-        x = x + self.mlp(self.ln_2(x))
+        if self.mlp is not None:
+            x = x + self.mlp(self.ln_2(x))
         return x
     
 
@@ -134,6 +135,7 @@ class GPTBase(nn.Module):
             wpe = nn.Embedding(config.sequence_length, config.n_embd),
             drop = nn.Dropout(config.dropout),
             h = nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
+            # h_special = Block(config, True),
             ln_f = LayerNorm(config.n_embd, bias=config.bias),
         ))
 
@@ -177,6 +179,8 @@ class GPTBase(nn.Module):
     def forward(self, idx, source_ids=None, targets=None, get_logits=False, exp_assignment=None, exp_assignment_index=None, token_loss_tracker=None):
         device = idx.device
         b, t = idx.size()
+        batch_assignment = None
+        batch_loss = None
         assert t <= self.config.sequence_length, f"Cannot forward sequence of length {t}, block size is only {self.config.sequence_length}"
         pos = torch.arange(0, t, dtype=torch.long, device=device).unsqueeze(0) # shape (1, t)
 
@@ -184,25 +188,29 @@ class GPTBase(nn.Module):
         tok_emb = self.transformer.wte(idx) # token embeddings of shape (b, t, n_embd)
         pos_emb = self.transformer.wpe(pos) # position embeddings of shape (1, t, n_embd)
 
-        # front or back placement of moe layer
-        if self.config.moe_front:
-            moe_emb, logits_and_experts = self.expert_routing(tok_emb)
-            x = self.transformer.drop(tok_emb + moe_emb + pos_emb)
-        else:
-            x = self.transformer.drop(tok_emb + pos_emb)
+        x = self.transformer.drop(tok_emb + pos_emb)
 
-        for block in self.transformer.h:
+        split = int(self.config.n_layer) # split the model into 3 parts: front, moe, back
+        for i in range(split):
+            block = self.transformer.h[i]
             x = block(x)
-        
-        if not self.config.moe_front:
-            x, logits_and_experts = self.expert_routing(x)
+
+        # x = self.transformer.h_special(x)
+        # res = x
+        x, logits_and_experts = self.expert_routing(x)
+        # x = res + x
+
+        for i in range(split, self.config.n_layer):
+            block = self.transformer.h[i]
+            x = block(x)
 
         x = self.transformer.ln_f(x)
         # writing the selected tokens into the expert assignment memory
         # if exp_assignment is not None and exp_assignment_index is not None:
         if exp_assignment is not None and exp_assignment_index is not None:
             ids = exp_assignment_index[0]
-            exp_assignment[ids:ids + b * t] = logits_and_experts["selected_experts"].squeeze().cpu().numpy()
+            batch_assignment = logits_and_experts["selected_experts"].squeeze().cpu().numpy()
+            exp_assignment[ids:ids + b * t] = batch_assignment
             exp_assignment_index[0] += b * t
             exp_assignment.flush()
 
@@ -212,7 +220,8 @@ class GPTBase(nn.Module):
             if token_loss_tracker is not None:
                 # if we are given a token loss array, write the loss into it
                 loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1, reduction='none')
-                token_loss_tracker[ids:ids + b * t] = loss.cpu().detach().numpy()
+                batch_loss = loss.cpu().detach().numpy()
+                token_loss_tracker[ids:ids + b * t] = batch_loss
                 token_loss_tracker.flush()
             else: 
                 loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
@@ -238,7 +247,13 @@ class GPTBase(nn.Module):
             loss = None
         logits = logits if get_logits else None
         # assert b == 32, "Batch size should be 32, but got {}".format(b)
-        return {'logits': logits, 'loss': loss, "exp_assignment_index":exp_assignment_index,"exp_assignment":exp_assignment, "token_loss_tracker": token_loss_tracker}
+        return {'logits': logits,
+                'loss': loss, 
+                "exp_assignment_index": exp_assignment_index, 
+                "exp_assignment": exp_assignment, 
+                "token_loss_tracker": token_loss_tracker,
+                "batch_assignment":  torch.tensor(batch_assignment),
+                "batch_loss":  torch.tensor(batch_loss)}
 
     def crop_sequence_length(self, sequence_length):
         # model surgery to decrease the block size if necessary

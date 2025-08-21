@@ -2,30 +2,29 @@ import numpy as np
 import matplotlib.pyplot as plt
 from collections import defaultdict, Counter
 
-runs = ['20250725_141727']
-num_tokens = 6553600000
+runs = ['20250805_092802']
+num_tokens = 4980736000
 
 for run_id in runs:
     assignment = np.memmap(
-        f'/mloscratch/homes/navasard/moe_doge/llm-baselines-moe/src/data/expert_assignments/run_id_{run_id}/train.bin',
+        f'/mloscratch/homes/navasard/moe_doge/expert_assignments/run_id_{run_id}/train.bin',
         dtype=np.int8, mode='r'
-    )
+    )[:num_tokens]
     tokens = np.memmap(
-        f'/mloscratch/homes/navasard/moe_doge/llm-baselines-moe/src/data/datasets/combined_slimpajama_debug_shuffled_full/train.bin',
+        f'/mloscratch/homes/navasard/moe_doge/datasets/combined_slimpajama_debug_shuffled_full/train.bin',
         dtype=np.uint16, mode='r'
     )[:num_tokens]
     source_ids = np.memmap(
-        f'/mloscratch/homes/navasard/moe_doge/llm-baselines-moe/src/data/datasets/combined_slimpajama_debug_shuffled_full/train_source_ids.bin',
+        f'/mloscratch/homes/navasard/moe_doge/datasets/combined_slimpajama_debug_shuffled_full/train_source_ids.bin',
         dtype=np.int32, mode='r'
     )[:num_tokens]
     losses = np.memmap(
-        f'/mloscratch/homes/navasard/moe_doge/llm-baselines-moe/src/data/expert_assignments/run_id_{run_id}/train_loss.bin',
+        f'/mloscratch/homes/navasard/moe_doge/expert_assignments/run_id_{run_id}/train_loss.bin',
         dtype=np.float32, mode='r'
-    )
-    assert len(source_ids) == len(tokens) == len(assignment) == len(losses), "Mismatch in lengths of tokens, assignment, and losses."
+    )[:num_tokens]
+    assert len(tokens) == len(source_ids) == len(assignment) == len(losses), "Mismatch in lengths of tokens, source ids, assignment, and losses."
 
     num_clusters = 7
-    running_avg_window = 10
     token_batch_size = 512 * 32
     group_size = 800
     experts = range(num_clusters)
@@ -48,21 +47,6 @@ for run_id in runs:
         
         loss_per_expert_per_batch.append(expert_losses)
 
-#   # --- Compute token cluster sizes using LAST expert assignment only ---
-#     # Map each token to the last expert it was assigned to
-#     tokens_aligned = tokens[:len(assignment)]  # match shape with assignment
-#     last_expert_map = {}
-
-#     for idx in range(len(assignment)):
-#         token = tokens_aligned[idx]
-#         expert = assignment[idx]
-#         last_expert_map[token] = expert  # overwrite with last assignment
-
-#     # Build clusters from this final mapping
-#     clusters = {i: set() for i in experts}
-#     for token, expert in last_expert_map.items():
-#         clusters[expert].add(token)
-    
     tokens_aligned = tokens[:num_tokens]
     source_ids_aligned = source_ids[:num_tokens]
 
@@ -89,32 +73,34 @@ for run_id in runs:
         expert_source_counts[expert][source] += 1
         source_expert_counts[source][expert] += 1
 
-    # --- Print cluster sizes ---
-    print("=== Cluster Sizes (Total Tokens per Expert, including duplicates) ===")
-    for expert in experts:
-        total = sum(clusters[expert].values())
-        print(f"Expert {expert:2d}: {total:,} tokens")
-
-    # --- Expert-centric view: P(source | expert) ---
-    print("\n=== P(Source | Expert): Where each expert's tokens came from ===")
-    for expert in experts:
-        total = sum(expert_source_counts[expert].values())
-        print(f"Expert {expert:2d} (total {total:,} tokens):")
-        for source in sources:
-            count = expert_source_counts[expert][source]
-            pct = 100 * count / total if total else 0.0
-            print(f"  From Source {source:2d}: {pct:6.2f}% ({count:,})")
-
-    # --- Source-centric view: P(expert | source) ---
-    print("\n=== P(Expert | Source): Where each source's tokens were routed ===")
-    for source in sources:
-        total = sum(source_expert_counts[source].values())
-        print(f"Source {source:2d} (total {total:,} tokens):")
+    # --- Write output to file instead of printing ---
+    output_filename = f'/mloscratch/homes/navasard/moe_doge/llm-baselines-moe/graphs/{run_id}-grouped-dedublicated.txt'
+    with open(output_filename, 'w') as f:
+        # --- Write cluster sizes ---
+        f.write("=== Cluster Sizes (Total Tokens per Expert, including duplicates) ===\n")
         for expert in experts:
-            count = source_expert_counts[source][expert]
-            pct = 100 * count / total if total else 0.0
-            print(f"  To Expert {expert:2d}: {pct:6.2f}% ({count:,})")
+            total = sum(clusters[expert].values())
+            f.write(f"Expert {expert:2d}: {total:,} tokens\n")
 
+        # --- Expert-centric view: P(source | expert) ---
+        f.write("\n=== P(Source | Expert): Where each expert's tokens came from ===\n")
+        for expert in experts:
+            total = sum(expert_source_counts[expert].values())
+            f.write(f"Expert {expert:2d} (total {total:,} tokens):\n")
+            for source in sources:
+                count = expert_source_counts[expert][source]
+                pct = 100 * count / total if total else 0.0
+                f.write(f"  From Source {source:2d}: {pct:6.2f}% ({count:,})\n")
+
+        # --- Source-centric view: P(expert | source) ---
+        f.write("\n=== P(Expert | Source): Where each source's tokens were routed ===\n")
+        for source in sources:
+            total = sum(source_expert_counts[source].values())
+            f.write(f"Source {source:2d} (total {total:,} tokens):\n")
+            for expert in experts:
+                count = source_expert_counts[source][expert]
+                pct = 100 * count / total if total else 0.0
+                f.write(f"  To Expert {expert:2d}: {pct:6.2f}% ({count:,})\n")
 
     # --- Aggregating over group of batches (e.g., 800 at a time) ---
     num_groups = (len(loss_per_expert_per_batch) + group_size - 1) // group_size

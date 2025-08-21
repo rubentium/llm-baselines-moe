@@ -11,6 +11,7 @@ import random
 import os
 import numpy as np
 from .utils import eval, get_batch, save_checkpoint
+from .doge import DoGE
 
 
 def train_base(model, opt, data, data_seed, scheduler, iterations, acc_steps, batch_size, sequence_length, eval_freq, ckpt_path, distributed_backend, extra_args, itr=0, rng_state_dict=None, run_id=None):
@@ -78,17 +79,21 @@ def train_base(model, opt, data, data_seed, scheduler, iterations, acc_steps, ba
     train_token_loss = data["train_loss"] if "train_loss" in data else None
     val_token_loss = data["val_loss"] if "val_loss" in data else None
 
+    train_ids = tgt_ids = list(range(extra_args.moe_num_experts))
+    # manually set args
+    args = {"output_dir":"/mloscratch/homes/navasard/moe_doge/llm-baselines-moe", "run_id": run_id, "max_grad_norm": 0.0}
+    # --- Init DoGE ---
+    doge = DoGE(model=model,
+                num_experts=extra_args.moe_num_experts,
+                args=args,
+                train_ids=train_ids,
+                tgt_ids=tgt_ids)
+
     while itr < iterations:
 
         for microstep_idx in range(acc_steps):  # gradient accumulation
-            batch = get_batch(data_train_iter, device=extra_args.device)
-            if len(batch) == 2:
-                x, y = batch
-                source_ids = None
-            elif len(batch) == 3:
-                x, y, source_ids = batch
-            else:
-                raise ValueError(f"Unexpected batch format: {len(batch)} elements in batch")
+            x, y = get_batch(data_train_iter, device=extra_args.device) 
+            b, t = x.shape 
 
             with type_ctx:
                 with distributed_backend.get_context_for_microstep_forward(model=model, microstep_idx=microstep_idx, gradient_accumulation_steps=acc_steps):
@@ -107,6 +112,11 @@ def train_base(model, opt, data, data_seed, scheduler, iterations, acc_steps, ba
                 loss = outputs['loss'] / acc_steps
 
             loss.backward()
+
+            token_mask = torch.ones_like(x)
+            current_lr = scheduler.get_last_lr()[0] if scheduler is not None else extra_args.lr
+            wandb_doge_dict = doge(outputs["batch_loss"].reshape(b, t), token_mask, outputs["batch_assignment"].reshape(b, t), current_lr)
+
             substep += 1
             if substep % len(data["train"]) == 0:
                 train_epochs += 1
@@ -135,12 +145,11 @@ def train_base(model, opt, data, data_seed, scheduler, iterations, acc_steps, ba
 
                 model.eval()
                 train_loss = loss.detach().cpu().item() * acc_steps
-                current_lr = scheduler.get_last_lr()[0] if scheduler is not None else extra_args.lr
                 
                 eval_steps = (
                     24 if itr < iterations else len(data["val"])
                 )
-                val_acc, val_loss, val_perplexity, val_exp_assignment, val_exp_assignment_index, val_token_loss = eval( model,
+                val_acc, val_loss, val_perplexity, val_exp_assignment, val_exp_assignment_index, val_token_loss = eval(model,
                                                                                                         data_val_iter,
                                                                                                         device=extra_args.device,
                                                                                                         max_num_batches=eval_steps,
@@ -171,6 +180,7 @@ def train_base(model, opt, data, data_seed, scheduler, iterations, acc_steps, ba
                         logs["val/final-acc"] = val_acc
                         logs["val/final-loss"] = val_loss
 
+                    log.update(wandb_doge_dict)
                     wandb.log(logs)
 
                     if extra_args.eval_seq_prefix != 'none' and (itr % (eval_freq * 5) == 0 or itr == iterations):

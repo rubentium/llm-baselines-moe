@@ -5,7 +5,7 @@ from datasets import load_dataset
 import os 
 
 BASE_PATH = "/mloscratch/homes/navasard/moe_doge/"
-SPJ_DATA_PATH = os.path.join(BASE_PATH, "datasets/combined_slimpajama_debug_shuffled_all_smaller/")
+SPJ_DATA_PATH = os.path.join(BASE_PATH, "datasets/combined_slimpajama_debug_shuffled_full/")
 SPJ_CHUNK_1_DATA_PATH = os.path.join(SPJ_DATA_PATH, "chunk1")
 
 

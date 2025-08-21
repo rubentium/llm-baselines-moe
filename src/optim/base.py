@@ -180,7 +180,7 @@ def train_base(model, opt, data, data_seed, scheduler, iterations, acc_steps, ba
                         logs["val/final-acc"] = val_acc
                         logs["val/final-loss"] = val_loss
 
-                    log.update(wandb_doge_dict)
+                    logs.update(wandb_doge_dict)
                     wandb.log(logs)
 
                     if extra_args.eval_seq_prefix != 'none' and (itr % (eval_freq * 5) == 0 or itr == iterations):

@@ -135,7 +135,6 @@ class GPTBase(nn.Module):
             wpe = nn.Embedding(config.sequence_length, config.n_embd),
             drop = nn.Dropout(config.dropout),
             h = nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
-            # h_special = Block(config, True),
             ln_f = LayerNorm(config.n_embd, bias=config.bias),
         ))
 
@@ -190,19 +189,11 @@ class GPTBase(nn.Module):
 
         x = self.transformer.drop(tok_emb + pos_emb)
 
-        split = int(self.config.n_layer) # split the model into 3 parts: front, moe, back
-        for i in range(split):
-            block = self.transformer.h[i]
+        # split = int(self.config.n_layer) # split the model into 3 parts: front, moe, back
+        for block in self.transformer.h:
             x = block(x)
 
-        # x = self.transformer.h_special(x)
-        # res = x
         x, logits_and_experts = self.expert_routing(x)
-        # x = res + x
-
-        for i in range(split, self.config.n_layer):
-            block = self.transformer.h[i]
-            x = block(x)
 
         x = self.transformer.ln_f(x)
         # writing the selected tokens into the expert assignment memory
@@ -252,8 +243,8 @@ class GPTBase(nn.Module):
                 "exp_assignment_index": exp_assignment_index, 
                 "exp_assignment": exp_assignment, 
                 "token_loss_tracker": token_loss_tracker,
-                "batch_assignment":  torch.tensor(batch_assignment),
-                "batch_loss":  torch.tensor(batch_loss)}
+                "batch_assignment": torch.tensor(batch_assignment) if batch_assignment is not None else None,
+                "batch_loss": torch.tensor(batch_loss) if batch_loss is not None else None,}
 
     def crop_sequence_length(self, sequence_length):
         # model surgery to decrease the block size if necessary

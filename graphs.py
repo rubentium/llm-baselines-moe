@@ -2,8 +2,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 from collections import defaultdict, Counter
 
-runs = ['20250805_092802']
-num_tokens = 4980736000
+runs = ['20250825_085104']
+num_tokens = 6553600000
 
 for run_id in runs:
     assignment = np.memmap(

@@ -105,9 +105,9 @@ def train_base(model, opt, data, data_seed, scheduler, iterations, acc_steps, ba
             train_exp_assignment, train_exp_assignment_index, train_token_loss = outputs["exp_assignment"], outputs["exp_assignment_index"], outputs["token_loss_tracker"]
 
             if train_token_loss is not None:
-                loss = outputs['loss'].mean() / acc_steps
+                loss = outputs["loss"].mean() / acc_steps
             else:
-                loss = outputs['loss'] / acc_steps
+                loss = outputs["loss"] / acc_steps
 
             loss.backward()
 
@@ -115,11 +115,11 @@ def train_base(model, opt, data, data_seed, scheduler, iterations, acc_steps, ba
             token_mask = torch.ones_like(x)
             current_lr = scheduler.get_last_lr()[0] if scheduler is not None else extra_args.lr
 
-            if itr > 1000 and (itr % eval_freq >= eval_freq - 5 or (itr % eval_freq == 0 and microstep_idx < acc_steps-1)):
+            if itr > 600 and (itr % eval_freq >= eval_freq - 5 or (itr % eval_freq == 0 and microstep_idx < acc_steps-1)):
                 wandb_doge_dict = {}
-                doge(outputs["batch_loss"].reshape(b, t), token_mask, outputs["batch_assignment"].reshape(b, t), current_lr)
-            elif itr > 1000 and itr % eval_freq == 0 and microstep_idx == acc_steps-1:
-                wandb_doge_dict = doge(outputs["batch_loss"].reshape(b, t), token_mask, outputs["batch_assignment"].reshape(b, t), current_lr, reweight=True)
+                doge(outputs["loss"], token_mask, outputs["batch_assignment"].reshape(b, t), 10*current_lr)
+            elif itr > 600 and itr % eval_freq == 0 and microstep_idx == acc_steps-1:
+                wandb_doge_dict = doge(outputs["batch_loss"].reshape(b, t), token_mask, outputs["batch_assignment"].reshape(b, t), 10*current_lr, reweight=True)
             else:
                 wandb_doge_dict = {}
 
@@ -142,7 +142,8 @@ def train_base(model, opt, data, data_seed, scheduler, iterations, acc_steps, ba
         scheduler.step()
         opt.zero_grad(set_to_none=True)
 
-        wandb.log(wandb_doge_dict)
+        if extra_args.wandb:
+            wandb.log(wandb_doge_dict, step=itr)
         itr += 1
 
         if itr % eval_freq == 0 or itr == iterations: # from here it's only evaluation code, all the training is above
@@ -187,7 +188,7 @@ def train_base(model, opt, data, data_seed, scheduler, iterations, acc_steps, ba
                         logs["val/final-acc"] = val_acc
                         logs["val/final-loss"] = val_loss
 
-                    wandb.log(logs)
+                    wandb.log(logs, step=itr)
 
                     if extra_args.eval_seq_prefix != 'none' and (itr % (eval_freq * 5) == 0 or itr == iterations):
                         if text_table is None:

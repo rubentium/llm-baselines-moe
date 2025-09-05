@@ -175,7 +175,7 @@ class GPTBase(nn.Module):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
-    def forward(self, idx, source_ids=None, targets=None, get_logits=False, exp_assignment=None, exp_assignment_index=None, token_loss_tracker=None):
+    def forward(self, idx, targets=None, get_logits=False, exp_assignment=None, exp_assignment_index=None, token_loss_tracker=None):
         device = idx.device
         b, t = idx.size()
         batch_assignment = None

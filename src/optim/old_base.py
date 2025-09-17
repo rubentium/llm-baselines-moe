@@ -80,17 +80,12 @@ def train_base(model, opt, data, data_seed, scheduler, iterations, acc_steps, ba
     train_ids = tgt_ids = list(range(extra_args.moe_num_experts))
     # manually set args
     args = {"output_dir":"/mloscratch/homes/navasard/moe_doge/llm-baselines-moe", "run_id": run_id, "max_grad_norm": 0.0}
-    # --- Init DoGE ---
-    doge = DoGE(model=model,
-                num_experts=extra_args.moe_num_experts,
-                args=args,
-                train_ids=train_ids,
-                tgt_ids=tgt_ids)
 
     while itr < iterations:
 
         for microstep_idx in range(acc_steps):  # gradient accumulation
-            x, y = get_batch(data_train_iter, device=extra_args.device)
+            x, y = get_batch(data_train_iter, device=extra_args.device) 
+            b, t = x.shape 
 
             with type_ctx:
                 with distributed_backend.get_context_for_microstep_forward(model=model, microstep_idx=microstep_idx, gradient_accumulation_steps=acc_steps):
@@ -102,42 +97,17 @@ def train_base(model, opt, data, data_seed, scheduler, iterations, acc_steps, ba
                                     )
 
             train_exp_assignment, train_exp_assignment_index, train_token_loss = outputs["exp_assignment"], outputs["exp_assignment_index"], outputs["token_loss_tracker"]
+
+            if train_token_loss is not None:
+                loss = outputs["loss"].mean() / acc_steps
+            else:
+                loss = outputs["loss"] / acc_steps
+
+            loss.backward()
+
             current_lr = scheduler.get_last_lr()[0] if scheduler is not None else extra_args.lr
 
-            if itr > 400 and not extra_args.no_doge:
-                is_eval_step = (itr % eval_freq == 0)
-                is_near_eval = (itr % eval_freq >= eval_freq - 5)
-
-                if is_near_eval and not (is_eval_step and microstep_idx == acc_steps - 1):
-                    # Pre-eval step: collect DOGE stats, no reweight
-                    wandb_doge_dict = {}
-                    doge(outputs["loss"] / acc_steps, outputs["batch_assignment"], 10 * current_lr)
-
-                elif is_eval_step and microstep_idx == acc_steps - 1:
-                    # Exact eval step, at end of gradient accumulation: update + reweight
-                    wandb_doge_dict = doge(
-                        outputs["loss"] / acc_steps,
-                        outputs["batch_assignment"],
-                        10 * current_lr,
-                        reweight=True,
-                    )
-
-                else:
-                    # Normal training step (within DOGE regime)
-                    if train_token_loss is not None:
-                        loss = outputs["loss"].mean() / acc_steps
-                    else:
-                        loss = outputs["loss"] / acc_steps
-                    loss.backward()
-                    wandb_doge_dict = {}
-
-            else:
-                # Pre-1000 iterations or DoGE turned off: just do standard training
-                if train_token_loss is not None:
-                    loss = outputs["loss"].mean() / acc_steps
-                else:
-                    loss = outputs["loss"] / acc_steps
-                loss.backward()
+            if extra_args.wandb:
                 wandb_doge_dict = {}
 
             substep += 1
@@ -159,10 +129,9 @@ def train_base(model, opt, data, data_seed, scheduler, iterations, acc_steps, ba
         scheduler.step()
         opt.zero_grad(set_to_none=True)
 
-        itr += 1
-
         if extra_args.wandb:
             wandb.log(wandb_doge_dict, step=itr)
+        itr += 1
 
         if itr % eval_freq == 0 or itr == iterations: # from here it's only evaluation code, all the training is above
             if distributed_backend.is_master_process():

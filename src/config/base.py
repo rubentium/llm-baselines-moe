@@ -53,6 +53,7 @@ def parse_args(base_parser, args, namespace):
     parser.add_argument('--moe_entropy_loss_factor', default=0.001, type=float)
     parser.add_argument('--moe_aux_loss_factor', default=0.01, type=float)
     parser.add_argument('--moe_z_loss_factor', default=0.001, type=float)
+    parser.add_argument('--no_doge', action='store_true')
     parser.add_argument('--moe_router_loss', default='load_balancing_only', type=str, choices=['entropy', 'load_balancing_only', 'load_balancing_z_loss'])
     parser.add_argument('--multiple_of',  # make SwiGLU hidden layer size multiple of large power of 2
         default=256,

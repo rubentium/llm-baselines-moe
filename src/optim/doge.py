@@ -4,98 +4,83 @@ import torch
 import numpy as np
 
 def get_model_grad_flat(model, tgt_params_ls=None):
-    """Flatten gradients into a single vector."""
-    full_grad_concat = None
+    """Flatten gradients for a single expert into a vector."""
+    grads = []
     for p_name, p in model.named_parameters():
         if tgt_params_ls is not None and p_name not in tgt_params_ls:
             continue
-        if "expert" in p_name:
-            grad_norm = p.grad.norm().item() if p.grad is not None else None
-            if p.grad is not None:
-                flat_grad = p.grad.detach().flatten()
-                if grad_norm != 0.0:
-                    full_grad_concat = torch.cat([full_grad_concat, flat_grad])
-                else:
-                    full_grad_concat = flat_grad
-    return full_grad_concat
+        if p.grad is not None and torch.norm(p.grad) > 0:
+            flat_grad = p.grad.detach().flatten()
+            grads.append(flat_grad)
+    return torch.cat(grads) if grads else None
 
-def get_expert_grad_flat(model, expert_idx):
-    expert = model.expert_routing.experts[expert_idx]
-    flat_grad = []
-    for _, p in expert.named_parameters():
-        if p.grad is not None:
-            flat_grad.append(p.grad.detach().flatten())
-    return torch.cat(flat_grad) if flat_grad else None
+def get_model_grad_dict(model):
+    """Get gradients for a single expert as dict {param_name: grad_tensor}."""
+    return {p_name: p.grad.clone() for p_name, p in model.named_parameters() if p.grad is not None and torch.norm(p.grad) > 0}
 
+def add_model_grad(model, domain_full_grad_dict, dw):
+    for p_name, p in model.named_parameters():
+        is_expert_param = 'expert' in p_name or 'experts' in p_name
+        for idx, v in enumerate(dw):
+            if domain_full_grad_dict[idx] is not None:
+                if not is_expert_param:
+                    if p.grad is None:
+                        p.grad = domain_full_grad_dict[idx][p_name]*v
+                    else:
+                        p.grad += domain_full_grad_dict[idx][p_name]*v
 
-def get_model_grad_dict(model, expert_idx):
-    """Get gradients as dict {param_name: grad_tensor}."""
-    expert = model.expert_routing.experts[expert_idx]
-    return {p_name: p.grad for p_name, p in expert.named_parameters()}
-
-
-def add_expert_grad_ls(model, domain_full_grad_dicts, dw):
-    """Combine domain-specific grads into model.grad weighted by dw."""
-    for expert in model.expert_routing.experts:
-        for p_name, p in expert.named_parameters():
-            grad_accum = None
-            for idx, v in enumerate(dw):
-                if domain_full_grad_dicts[idx] is not None and domain_full_grad_dicts[idx][p_name] is not None:
-                    contrib = domain_full_grad_dicts[idx][p_name] * v
-                    grad_accum = contrib if grad_accum is None else grad_accum + contrib
-            if grad_accum is not None:
-                if p.grad is None:
-                    p.grad = grad_accum
-                else:
-                    p.grad += grad_accum
-
+                elif is_expert_param and p_name in domain_full_grad_dict[idx]:
+                    p.grad = domain_full_grad_dict[idx][p_name]
 
 class DoGE:
     def __init__(self,
-                 model,
-                 num_experts,
-                 args,
-                 train_ids,
-                 tgt_ids,
-                 train_dw=None,
-                 val_dw=None):
+                model,
+                num_experts,
+                args,
+                train_ids,
+                tgt_ids,
+                train_dw=None,
+                val_dw=None):
 
-        self.model = model  # must be set later by doge.model = model
+        self.model = model
         self.args = args
+        self.num_experts = num_experts
 
         # domain setup
         self.domain_list = [f"MoE_{i}" for i in range(num_experts)]
         self.idx2domain = {i: dom for i, dom in enumerate(self.domain_list)}
         self.domain2idx = {dom: i for i, dom in self.idx2domain.items()}
-        self.grad_dict_tracker = []
-        self.weights_tracker = []
 
         self.train_ids = torch.tensor(train_ids, dtype=torch.long)
         self.tgt_ids   = torch.tensor(tgt_ids, dtype=torch.long)
 
-        # domain weights
+        # domain weights - one per expert
         if train_dw is None:
-            self.train_dw = torch.ones(len(self.domain_list)).to("cuda") / len(self.train_ids)
+            self.train_dw = torch.ones(self.num_experts).to("cuda") / len(self.train_ids)
         else:
             self.train_dw = torch.tensor(train_dw, dtype=torch.float).to("cuda")
 
         if val_dw is None:
-            self.val_dw = torch.zeros(len(self.domain_list)).to("cuda")
+            self.val_dw = torch.zeros(self.num_experts).to("cuda")
             self.val_dw[self.tgt_ids] = 1.0 / len(self.tgt_ids)
         else:
             self.val_dw = torch.tensor(val_dw, dtype=torch.float).to("cuda")
 
         # DoGE hyperparams
         self.reweight_eps = 0.0
-        self.mu = 0.005
+        self.mu = 0.05
         self.dw_min = 0.0
         self.dw_max = 5.00
 
-        # bookkeeping
-        self.flat_grad_mat = None   # allocated later when model is set
-        self.iter_domain_losses = torch.zeros(len(self.domain_list))
-        self.avg_dw = torch.zeros(len(self.domain_list)).to("cuda")
+        # bookkeeping - now we have separate gradient storage for each expert
+        self.flat_grad_mat = None
+        self.tgt_accumulation = None
+        self.accumulation_steps = 0
+        self.iter_domain_losses = torch.zeros(self.num_experts).to("cuda")
+        self.avg_dw = torch.zeros(self.num_experts).to("cuda")
         self.dw_update_steps = 0
+
+        self._init_grad_buffers()
 
         self.last_dw_save_path = os.path.join(self.args["output_dir"], f'{self.args["run_id"]}_last_dw_config.pkl')
         self.avg_dw_save_path = os.path.join(self.args["output_dir"], f'{self.args["run_id"]}_avg_dw_config.pkl')
@@ -104,18 +89,21 @@ class DoGE:
         if os.path.exists(self.last_dw_save_path):
             with open(self.last_dw_save_path, 'rb') as trg:
                 cur_domain_config_dict = pickle.load(trg)
-                self.train_dw = cur_domain_config_dict['train_dw']
+                self.train_dw = cur_domain_config_dict['train_dw'].clone()
                 self.dw_update_steps = cur_domain_config_dict['dw_update_steps']
             with open(self.avg_dw_save_path, 'rb') as trg:
                 avg_domain_config_dict = pickle.load(trg)
-                self.avg_dw = avg_domain_config_dict['train_dw'] * self.dw_update_steps
+                self.avg_dw = avg_domain_config_dict['train_dw'] * self.dw_update_steps.clone()
             print(f'Resumed DoGE from step {self.dw_update_steps}…')
 
     def _init_grad_buffers(self):
         """Allocate grad matrix once model is known."""
         if self.flat_grad_mat is None:
-            num_params = sum(p.numel() for p in self.model.expert_routing.experts[0].parameters())
-            self.flat_grad_mat = torch.zeros((len(self.domain_list), num_params), device=next(self.model.parameters()).device)
+            num_model_params = sum(p.numel() for p in self.model.parameters())
+            num_expert_params = sum(p.numel() for p in self.model.expert_routing.experts[0].parameters())
+            num_activated_params = num_model_params - (self.num_experts - 1) * num_expert_params
+            self.flat_grad_mat = torch.zeros((self.num_experts, num_activated_params), device=next(self.model.parameters()).device)
+            self.tgt_accumulation = torch.zeros((self.num_experts, num_activated_params), device=next(self.model.parameters()).device)
 
     def write_weights(self, cur_weights, avg_weights):
         cur_domain_config_dict = {'train_dw': cur_weights, 'dw_update_steps': self.dw_update_steps}
@@ -125,93 +113,77 @@ class DoGE:
         with open(self.avg_dw_save_path, 'wb') as trg:
             pickle.dump(avg_domain_config_dict, trg)
 
-    def __call__(self, pertoken_losses, token_masks, domain_ids, current_lr, reweight=False):
-        """Update domain weights based on gradients (no backward here)."""
-        assert self.model is not None, "doge.model = model must be set before use"
-        self._init_grad_buffers()
-
+    def __call__(self, pertoken_losses, domain_ids, current_lr, reweight=False):
+        """Simplified DoGE for MoE where domain == expert."""
         wandb_log_dict = {}
-
-        full_grad_dicts = []
-        all_domain_losses = []
-        for domain_id in range(len(self.domain_list)):
+        list_of_model_grad_dicts = []
+        
+        # For each domain (which is also an expert)
+        for domain_id in range(self.num_experts):
             domain_mask = (domain_ids == domain_id)
             if domain_mask.sum() > 0:
-                curr_domain_losses = pertoken_losses[token_masks.cpu() * domain_mask].mean()
-                all_domain_losses.append(curr_domain_losses)
+                # Clear this expert's gradients
+                for p in self.model.parameters():
+                    if p.grad is not None:
+                        p.grad.zero_()
+                
+                # Compute loss and gradients for this expert/domain
+                curr_domain_loss = pertoken_losses[domain_mask].mean()
+                curr_domain_loss.backward(retain_graph=True)
+                
+                # Store the loss
+                self.iter_domain_losses[domain_id] = curr_domain_loss.item()
+                
+                # Get and store the gradients
+                model_flat_grad = get_model_grad_flat(self.model)
+                
+                if domain_id in self.train_ids.tolist():
+                    self.flat_grad_mat[domain_id][:] = model_flat_grad
+                    list_of_model_grad_dicts.append(get_model_grad_dict(self.model))
+                    self.tgt_accumulation[domain_id][:] += model_flat_grad
+        
+        self.accumulation_steps += 1
+        # Clear all gradients after processing
+        self.model.zero_grad()
+        
+        # Reweighting logic (much simpler)
+        if reweight and self.accumulation_steps > 0:
+            train_grads = self.flat_grad_mat[self.train_ids]
+            avg_tgt_grads = self.tgt_accumulation / self.accumulation_steps
+            
+            # Compute alignment scores
+            scores_mat = train_grads @ avg_tgt_grads.T
+
+            if set(self.train_ids.tolist()) == set(self.tgt_ids.tolist()):
+                scores = current_lr * (scores_mat.sum(dim=-1) - scores_mat.diag())
             else:
-                all_domain_losses.append(None)
+                scores = current_lr * scores_mat.sum(dim=-1)
 
-        # read gradients (already computed by outer backward)
-        for domain_id, curr_domain_losses in enumerate(all_domain_losses):
-            if curr_domain_losses is None:
-                full_grad_dicts.append(None)
-            else:
-                self.iter_domain_losses[domain_id] = curr_domain_losses
-
-                # get domain grad
-                if self.args["max_grad_norm"] > 0.0:
-                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.args["max_grad_norm"])
-                domain_flat_grad = get_expert_grad_flat(self.model, domain_id)
-                domain_full_grad_dict = get_model_grad_dict(self.model, domain_id)
-                self.flat_grad_mat[domain_id][:] = domain_flat_grad
-                full_grad_dicts.append(domain_full_grad_dict)
-
-        train_mat = self.flat_grad_mat[self.train_ids][:]
-        tgt_mat = self.flat_grad_mat[self.tgt_ids][:]
-        scores_mat = train_mat @ tgt_mat.T
-
-        if set(self.train_ids.tolist()) == set(self.tgt_ids.tolist()):
-            scores = current_lr * (scores_mat.sum(dim=-1) - scores_mat.diag())
-        else:
-            scores = current_lr * scores_mat.sum(dim=-1)
-
-        avg_norm = train_mat.norm(dim=-1).mean()
-        scores = scores / (avg_norm + 1e-6)
-        scores = torch.clip(scores, min=current_lr * self.dw_min, max=current_lr * self.dw_max)
-
-        dw_prev = self.train_dw
-        log_dw_new = torch.log(dw_prev[self.train_ids]) + scores / self.mu
-        dw_new = torch.softmax(log_dw_new, dim=-1)
-        dw_new = (1 - self.reweight_eps) * dw_new + self.reweight_eps / len(dw_new)
-        self.train_dw[self.train_ids] = dw_new
-
-        if not reweight:
-            self.weights_tracker.append(self.train_dw.cpu().numpy())
-            self.grad_dict_tracker.append({i: full_grad_dicts[i] for i in self.train_ids.tolist()})
-        else:
-            self.weights_tracker.append(self.train_dw.cpu().numpy())
-            self.grad_dict_tracker.append({i: full_grad_dicts[i] for i in self.train_ids.tolist()})
-            weights_stack = torch.tensor(np.array(self.weights_tracker))
-            agg_dw_weights = weights_stack.mean(dim=0).to(device=self.avg_dw.device)
-
-            self.avg_dw[self.train_ids] += agg_dw_weights
+            scores = current_lr * scores / (train_grads.norm(dim=-1).mean() + 1e-6)
+            scores = torch.clip(scores, min=self.dw_min, max=self.dw_max)
+            
+            # Update domain weights
+            dw_prev = self.train_dw.clone()
+            log_dw_new = torch.log(dw_prev[self.train_ids]) + scores / self.mu
+            dw_new = torch.softmax(log_dw_new, dim=-1)
+            dw_new = (1 - self.reweight_eps) * dw_new + self.reweight_eps / len(dw_new)
+            
+            self.train_dw[self.train_ids] = dw_new
+            self.avg_dw += self.train_dw
             self.dw_update_steps += 1
 
-            avg_grad_dict = {}
-            for i in self.train_ids.tolist():
-                step_dicts = [d[i] for d in self.grad_dict_tracker if d[i] is not None]
-                if not step_dicts:
-                    avg_grad_dict[i] = None
-                    continue
-                keys = step_dicts[0].keys()
-                avg_grad_dict[i] = {k: sum(sd[k] for sd in step_dicts) / len(step_dicts) for k in keys}
-
-            add_expert_grad_ls(self.model, [avg_grad_dict[i] for i in self.train_ids.tolist()], dw=agg_dw_weights[self.train_ids])
-            self.write_weights(cur_weights=agg_dw_weights, avg_weights=self.avg_dw / self.dw_update_steps)
-            self.grad_dict_tracker.clear()
-            self.weights_tracker.clear()
-
-            grad_norm = self.flat_grad_mat.norm(dim=-1)
-            for domain_idx in range(len(self.domain_list)):
+            add_model_grad(self.model, list_of_model_grad_dicts, self.train_dw)
+            
+            # Reset accumulator
+            self.tgt_accumulation.zero_()
+            self.accumulation_steps = 0
+            
+            for i, domain_idx in enumerate(self.train_ids.tolist()):
                 domain_name = self.idx2domain[domain_idx]
-                if domain_idx in self.train_ids:
-                    wandb_log_dict[f'score/{domain_name}'] = scores[domain_idx].item()
-                elif domain_idx in self.tgt_ids:
-                    wandb_log_dict[f'score/{domain_name}'] = 0.0
-                wandb_log_dict[f'grad_norm/{domain_name}'] = max(grad_norm[domain_idx].item(), self.args["max_grad_norm"])
+                wandb_log_dict[f'expert_losses/{domain_name}'] = self.iter_domain_losses[domain_idx].item()
+                wandb_log_dict[f'score/{domain_name}'] = scores[i].item()
                 wandb_log_dict[f'avg_dw/{domain_name}'] = self.avg_dw[domain_idx].item() / self.dw_update_steps
                 wandb_log_dict[f'cur_dw/{domain_name}'] = self.train_dw[domain_idx].item()
-                wandb_log_dict[f'loss/{domain_name}'] = self.iter_domain_losses[domain_idx]
-
             return wandb_log_dict
+            
+        return None

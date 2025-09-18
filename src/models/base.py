@@ -54,6 +54,7 @@ class CausalSelfAttention(nn.Module):
                                         .view(1, 1, config.sequence_length, config.sequence_length))
 
     def forward(self, x):
+        
         B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
 
         # calculate query, key, values for all heads in batch and move head forward to be the batch dim

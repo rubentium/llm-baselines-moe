@@ -18,7 +18,7 @@ def parse_args(base_parser, args, namespace):
     parser.add_argument('--seed', default=0, type=int)
     parser.add_argument('--data_seed', default=1004, type=int)
     parser.add_argument('--device', default='cuda:0', type=str)
-    parser.add_argument('--iterations', default=100000, type=int)
+    parser.add_argument('--iterations', default=10000, type=int)
     parser.add_argument('--lr', default=1e-3, type=float)
     parser.add_argument('--warmup_percent', default=0.05, type=float)
     parser.add_argument('--weight_decay', default=0.1, type=float)

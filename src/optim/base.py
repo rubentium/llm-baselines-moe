@@ -103,7 +103,7 @@ def train_base(model, opt, data, data_seed, scheduler, iterations, acc_steps, ba
             train_exp_assignment, train_exp_assignment_index, train_token_loss = outputs["exp_assignment"], outputs["exp_assignment_index"], outputs["token_loss_tracker"]
             current_lr = scheduler.get_last_lr()[0] if scheduler is not None else extra_args.lr
 
-            if itr > 200 and not extra_args.no_doge:
+            if itr > 1000 and not extra_args.no_doge:
                 is_eval_step = (itr % eval_freq == 0)
                 is_near_eval = (itr % eval_freq >= eval_freq - 5)
 

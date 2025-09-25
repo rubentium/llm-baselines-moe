@@ -116,7 +116,7 @@ class DoGE:
     def __call__(self, pertoken_losses, domain_ids, current_lr, reweight=False):
         """Simplified DoGE for MoE where domain == expert."""
         wandb_log_dict = {}
-        
+
         for domain_id in range(self.num_experts):
             domain_mask = (domain_ids == domain_id)
             if domain_mask.sum() > 0:
@@ -160,7 +160,7 @@ class DoGE:
             else:
                 scores = current_lr * scores_mat.sum(dim=-1)
 
-            scores = current_lr * scores / (train_grads.norm(dim=-1).mean() + 1e-6)
+            scores = scores / (train_grads.norm(dim=-1).mean() + 1e-6)
             scores = torch.clip(scores, min=self.dw_min, max=self.dw_max)
             
             dw_prev = self.train_dw.clone()

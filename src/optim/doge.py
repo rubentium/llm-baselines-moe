@@ -54,9 +54,12 @@ class DoGE:
         self.train_ids = torch.tensor(train_ids, dtype=torch.long)
         self.tgt_ids   = torch.tensor(tgt_ids, dtype=torch.long)
 
-        # domain weights - one per expert
+        # domain weights, one per expert
         if train_dw is None:
             self.train_dw = torch.ones(self.num_experts).to("cuda") / len(self.train_ids)
+            # rand_dw = torch.rand(self.num_experts, device="cuda")
+            # self.train_dw = torch.tensor([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=torch.float).to("cuda")
+            print(f'Initialized DoGE weights: {self.train_dw}')
         else:
             self.train_dw = torch.tensor(train_dw, dtype=torch.float).to("cuda")
 
@@ -114,40 +117,34 @@ class DoGE:
             pickle.dump(avg_domain_config_dict, trg)
 
     def __call__(self, pertoken_losses, domain_ids, current_lr, reweight=False):
-        """Simplified DoGE for MoE where domain == expert."""
+        """Simplified DoGE for MoE"""
         wandb_log_dict = {}
+        # domain_full_grad_dict = [None] * self.num_experts
 
         for domain_id in range(self.num_experts):
             domain_mask = (domain_ids == domain_id)
             if domain_mask.sum() > 0:
                 # Compute loss and gradients for this domain
                 curr_domain_loss = pertoken_losses[domain_mask].mean()
-                should_retain = reweight or (domain_id < self.num_experts - 1)
                 grads = torch.autograd.grad(curr_domain_loss, 
                                             self.model.parameters(), 
-                                            retain_graph=should_retain,
+                                            retain_graph=True,
                                             allow_unused=True)
-                
-                # Store the loss 
-                if reweight:
-                    self.iter_domain_losses[domain_id] = curr_domain_loss
-                else:
-                    self.iter_domain_losses[domain_id] = curr_domain_loss.item()
 
-                # Get and store the gradients
+                self.iter_domain_losses[domain_id] = curr_domain_loss.item()
+
                 model_flat_grad = torch.cat([g.reshape(-1) for g in grads if g is not None and torch.norm(g) > 0])
-
+    
                 if domain_id in self.train_ids.tolist():
                     self.flat_grad_mat[domain_id][:] = model_flat_grad
                     self.tgt_accumulation[domain_id][:] += model_flat_grad
-                
+
                 if not reweight:
                     del curr_domain_loss
                 del grads, model_flat_grad, domain_mask
 
-        torch.cuda.empty_cache()
         self.accumulation_steps += 1
-        
+
         # Reweighting logic
         if reweight and self.accumulation_steps > 0:
             train_grads = self.flat_grad_mat[self.train_ids]
@@ -161,21 +158,16 @@ class DoGE:
                 scores = current_lr * scores_mat.sum(dim=-1)
 
             scores = scores / (train_grads.norm(dim=-1).mean() + 1e-6)
-            scores = torch.clip(scores, min=self.dw_min, max=self.dw_max)
+            # scores = torch.clip(scores, min=self.dw_min, max=self.dw_max)
             
             dw_prev = self.train_dw.clone()
             log_dw_new = torch.log(dw_prev[self.train_ids]) + scores / self.mu
             dw_new = torch.softmax(log_dw_new, dim=-1)
             dw_new = (1 - self.reweight_eps) * dw_new + self.reweight_eps / len(dw_new)
-            
+
             self.train_dw[self.train_ids] = dw_new
             self.avg_dw += self.train_dw
             self.dw_update_steps += 1
-
-            losses = torch.stack([self.iter_domain_losses[domain_id] for domain_id in range(self.num_experts)])
-            weighted_losses = losses * self.train_dw
-            total_loss = weighted_losses.sum()
-            total_loss.backward()
 
             # Reset accumulator
             self.tgt_accumulation.zero_()
@@ -183,7 +175,7 @@ class DoGE:
             
             for i, domain_idx in enumerate(self.train_ids.tolist()):
                 domain_name = self.idx2domain[domain_idx]
-                wandb_log_dict[f'expert_losses/{domain_name}'] = self.iter_domain_losses[domain_idx].item()
+                wandb_log_dict[f'expert_losses/{domain_name}'] = self.iter_domain_losses[domain_idx]
                 wandb_log_dict[f'score/{domain_name}'] = scores[i].item()
                 wandb_log_dict[f'avg_dw/{domain_name}'] = self.avg_dw[domain_idx].item() / self.dw_update_steps
                 wandb_log_dict[f'cur_dw/{domain_name}'] = self.train_dw[domain_idx].item()

@@ -103,41 +103,50 @@ def train_base(model, opt, data, data_seed, scheduler, iterations, acc_steps, ba
             train_exp_assignment, train_exp_assignment_index, train_token_loss = outputs["exp_assignment"], outputs["exp_assignment_index"], outputs["token_loss_tracker"]
             current_lr = scheduler.get_last_lr()[0] if scheduler is not None else extra_args.lr
 
-            if itr > 1000 and not extra_args.no_doge:
-                is_eval_step = (itr % eval_freq == 0)
-                is_near_eval = (itr % eval_freq >= eval_freq - 5)
-
-                if is_near_eval and not (is_eval_step and microstep_idx == acc_steps - 1):
-                    # Pre-eval step: collect DOGE stats, no reweight
-                    wandb_doge_dict = {}
-                    doge(outputs["loss"] / acc_steps, outputs["batch_assignment"], 10 * current_lr)
-
-                elif is_eval_step and microstep_idx == acc_steps - 1:
-                    # Exact eval step, at end of gradient accumulation: update + reweight
-                    wandb_doge_dict = doge(
-                        outputs["loss"] / acc_steps,
-                        outputs["batch_assignment"],
-                        10 * current_lr,
-                        reweight=True,
-                    )
-
-                else:
-                    # Normal training step (within DOGE regime)
-                    if train_token_loss is not None:
-                        loss = outputs["loss"].mean() / acc_steps
-                    else:
-                        loss = outputs["loss"] / acc_steps
-                    loss.backward()
-                    wandb_doge_dict = {}
-
-            else:
-                # Pre-1000 iterations or DoGE turned off: just do standard training
+            wandb_doge_dict = {}
+            if extra_args.no_doge:
+            # No DoGE training regime / baseline
                 if train_token_loss is not None:
                     loss = outputs["loss"].mean() / acc_steps
                 else:
                     loss = outputs["loss"] / acc_steps
                 loss.backward()
-                wandb_doge_dict = {}
+            else:
+                # With DoGE
+                if itr > 1000:
+                    is_eval_step = (100 * itr % eval_freq == 0)
+                    is_near_eval = (100 * itr % eval_freq >= eval_freq - 1)
+
+                    if is_near_eval and not (is_eval_step and microstep_idx == acc_steps - 1):
+                        # Pre-eval step: collect DOGE stats, no reweight
+                        doge(outputs["loss"] / acc_steps, outputs["batch_assignment"], 2*current_lr)
+
+                    elif is_eval_step and microstep_idx == acc_steps - 1:
+                        # Exact eval step, at end of gradient accumulation: update + reweight
+                        wandb_doge_dict = doge(
+                            outputs["loss"] / acc_steps,
+                            outputs["batch_assignment"],
+                            2*current_lr,
+                            reweight=True,
+                        )
+
+                pertoken_losses = outputs["loss"] / acc_steps
+                batch_assignment = outputs["batch_assignment"].to(device=pertoken_losses.device)
+                dw = doge.train_dw
+                num_domains = dw.size(0)
+
+                loss_sums = torch.zeros(num_domains, device=pertoken_losses.device).index_add_(
+                    0, batch_assignment, pertoken_losses
+                )
+                counts = torch.zeros(num_domains, device=pertoken_losses.device).index_add_(
+                    0, batch_assignment, torch.ones_like(pertoken_losses)
+                )
+
+                per_domain_means = torch.where(counts > 0, loss_sums / counts, torch.zeros_like(loss_sums))
+                loss = (dw * per_domain_means).sum()
+                loss.backward()
+
+                del pertoken_losses, batch_assignment, loss_sums, counts
 
             substep += 1
             if substep % len(data["train"]) == 0:

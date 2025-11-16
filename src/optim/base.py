@@ -22,6 +22,7 @@ def train_base(model, opt, data, data_seed, scheduler, iterations, acc_steps, ba
     substep = itr * acc_steps
     data["train"], train_sampler = get_dataloader(
         data["train"],
+        tgt_dataset=data.get("tgt_train", None),
         sequence_length=sequence_length,
         batch_size=batch_size,
         seed=data_seed,
@@ -29,7 +30,7 @@ def train_base(model, opt, data, data_seed, scheduler, iterations, acc_steps, ba
     )
     
     data["val"], val_sampler = get_dataloader(
-        data["val"],
+        data["tgt_val"] if data["tgt_val"] is not None else data["val"],
         source_ids=None,
         sequence_length=sequence_length,
         batch_size=batch_size,
@@ -69,10 +70,10 @@ def train_base(model, opt, data, data_seed, scheduler, iterations, acc_steps, ba
     for _ in range(substep % num_substeps_per_epoch):
         get_batch(data_train_iter, device=extra_args.device)
 
-    train_exp_assignment=data["train_exp"] if "train_exp" in data else None
-    train_exp_assignment_index = [data["train_exp_index"]] if "train_exp_index" in data else None
+    train_exp_assignment= data["train_exp"] if "train_exp" in data else None
+    train_exp_assignment_index = 0
     val_exp_assignment = data["val_exp"] if "val_exp" in data else None
-    val_exp_assignment_index = [data["val_exp_index"]] if "val_exp_index" in data else None
+    tgt_exp_assignment_index = 0
 
     train_token_loss = data["train_loss"] if "train_loss" in data else None
     val_token_loss = data["val_loss"] if "val_loss" in data else None
@@ -83,13 +84,16 @@ def train_base(model, opt, data, data_seed, scheduler, iterations, acc_steps, ba
     # --- Init DoGE ---
     doge = DoGE(model=model,
                 num_experts=extra_args.moe_num_experts,
-                args=args,
                 train_ids=train_ids,
-                tgt_ids=tgt_ids)
+                tgt_ids=tgt_ids,
+                args=args)
 
     while itr < iterations:
         for microstep_idx in range(acc_steps):  # gradient accumulation
-            x, y = get_batch(data_train_iter, device=extra_args.device)
+            x, y, *tgt = get_batch(data_train_iter, device=extra_args.device)
+            tgt_x, tgt_y = (tgt if len(tgt) == 2 else (None, None))
+            b, t = x.size()
+            tgt_outputs = None
 
             with type_ctx:
                 with distributed_backend.get_context_for_microstep_forward(model=model, microstep_idx=microstep_idx, gradient_accumulation_steps=acc_steps):
@@ -100,35 +104,46 @@ def train_base(model, opt, data, data_seed, scheduler, iterations, acc_steps, ba
                                     token_loss_tracker=train_token_loss,
                                     )
 
-            train_exp_assignment, train_exp_assignment_index, train_token_loss = outputs["exp_assignment"], outputs["exp_assignment_index"], outputs["token_loss_tracker"]
-            current_lr = scheduler.get_last_lr()[0] if scheduler is not None else extra_args.lr
+                    if tgt_x is not None and tgt_y is not None:
+                        tgt_outputs = model(tgt_x,
+                                            targets=tgt_y,
+                                            exp_assignment_index=tgt_exp_assignment_index,
+                                            )
 
+                        tgt_exp_assignment_index += b * t
+                    train_exp_assignment_index += b * t
+
+            current_lr = scheduler.get_last_lr()[0] if scheduler is not None else extra_args.lr
             wandb_doge_dict = {}
+
             if extra_args.no_doge:
-            # No DoGE training regime / baseline
-                if train_token_loss is not None:
-                    loss = outputs["loss"].mean() / acc_steps
-                else:
-                    loss = outputs["loss"] / acc_steps
+                # No DoGE training regime / baseline
+                loss = outputs["loss"].mean() / acc_steps
                 loss.backward()
             else:
                 # With DoGE
-                if itr > 1000:
-                    is_eval_step = (100 * itr % eval_freq == 0)
-                    is_near_eval = (100 * itr % eval_freq >= eval_freq - 1)
+                if itr > 800:
+                    is_eval_step = (20 * itr % eval_freq == 0)
+                    is_near_eval = (20 * itr % eval_freq >= eval_freq - 5)
 
-                    if is_near_eval and not (is_eval_step and microstep_idx == acc_steps - 1):
+                    if is_near_eval or is_eval_step:
                         # Pre-eval step: collect DOGE stats, no reweight
-                        doge(outputs["loss"] / acc_steps, outputs["batch_assignment"], 2*current_lr)
-
-                    elif is_eval_step and microstep_idx == acc_steps - 1:
-                        # Exact eval step, at end of gradient accumulation: update + reweight
-                        wandb_doge_dict = doge(
-                            outputs["loss"] / acc_steps,
-                            outputs["batch_assignment"],
-                            2*current_lr,
-                            reweight=True,
+                        doge(
+                            pertoken_losses=outputs["loss"] / acc_steps,
+                            domain_ids=outputs["batch_assignment"],
                         )
+                        if tgt_outputs is not None:
+                                doge.ood_call(
+                                    tgt_losses=tgt_outputs["loss"] / acc_steps,
+                                    tgt_domain_ids=tgt_outputs["batch_assignment"] 
+                                    if "batch_assignment" in tgt_outputs else outputs["batch_assignment"],
+                                )
+                        else:
+                            doge.ood_call()
+
+                    if is_eval_step and microstep_idx == acc_steps - 1:
+                        # Exact eval step, at end of gradient accumulation: update + reweight
+                        wandb_doge_dict = doge.reweight(current_lr)
 
                 pertoken_losses = outputs["loss"] / acc_steps
                 batch_assignment = outputs["batch_assignment"].to(device=pertoken_losses.device)
@@ -144,9 +159,10 @@ def train_base(model, opt, data, data_seed, scheduler, iterations, acc_steps, ba
 
                 per_domain_means = torch.where(counts > 0, loss_sums / counts, torch.zeros_like(loss_sums))
                 loss = (dw * per_domain_means).sum()
+                loss = pertoken_losses.mean()
                 loss.backward()
 
-                del pertoken_losses, batch_assignment, loss_sums, counts
+                del pertoken_losses, batch_assignment, loss_sums, counts, per_domain_means
 
             substep += 1
             if substep % len(data["train"]) == 0:
@@ -183,15 +199,14 @@ def train_base(model, opt, data, data_seed, scheduler, iterations, acc_steps, ba
                 eval_steps = (
                     24 if itr < iterations else len(data["val"])
                 )
-                val_acc, val_loss, val_perplexity, val_exp_assignment, val_exp_assignment_index, val_token_loss = eval(model,
-                                                                                                        data_val_iter,
-                                                                                                        device=extra_args.device,
-                                                                                                        max_num_batches=eval_steps,
-                                                                                                        ctx=type_ctx,
-                                                                                                        exp_assignment=val_exp_assignment,
-                                                                                                        exp_assignment_index=val_exp_assignment_index,
-                                                                                                        token_loss_tracker=val_token_loss,
-                                                                                    )
+                val_acc, val_loss, val_perplexity = eval(model,
+                                                            data_val_iter,
+                                                            device=extra_args.device,
+                                                            max_num_batches=eval_steps,
+                                                            ctx=type_ctx,
+                                                            exp_assignment=val_exp_assignment,
+                                                            token_loss_tracker=val_token_loss,
+                                                        )
 
                 print_string = f"{epoch}/{itr} [train] loss={train_loss:.3f} [val] loss={val_loss:.3f}, pp={val_perplexity:.2f}, acc={val_acc:3f}"
                 print_string += f" [time per itr] {dt*1000/eval_freq:.2f}ms"

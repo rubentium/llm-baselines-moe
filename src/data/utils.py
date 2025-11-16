@@ -36,16 +36,19 @@ def get_dataset(args) -> Dict[str, np.ndarray]:
                                    batch_size=args.batch_size, 
                                    acc_steps=args.acc_steps,
                                    iterations=args.iterations,
-                                   eval_freq=args.eval_freq,)
+                                   eval_freq=args.eval_freq,
+                                   log_assignments=args.log_expert_assignments,
+                                   tgt_dataset=args.tgt_dataset)
     if args.dataset == "mathqa":
         return get_mathqa()
     else:
         raise NotImplementedError(f"Unknow dataset key '{args.dataset}'")
 
 class Dataset(torch.utils.data.Dataset):
-    def __init__(self, data, source_ids, sequence_length):
+    def __init__(self, data, source_ids, sequence_length, tgt_data=None):
         super().__init__()
         self.data = data
+        self.tgt_data = tgt_data
         self.source_ids = source_ids
         self.sequence_length = sequence_length
 
@@ -59,16 +62,16 @@ class Dataset(torch.utils.data.Dataset):
         seq_length = self.sequence_length
         idx = idx * seq_length
         x = torch.from_numpy((self.data[idx : idx + seq_length]).astype(np.int64))
-
         y = torch.from_numpy((self.data[idx + 1 : idx + 1 + seq_length]).astype(np.int64))
 
-        if self.source_ids is not np.array(None) and self.source_ids is not None: # dont replace this with 'is'
-            source_ids = torch.from_numpy((self.source_ids[idx : idx + seq_length]).astype(np.int64))
-            return x, y, source_ids
+        if self.tgt_data is not None:
+            tgt_x = torch.from_numpy((self.tgt_data[idx : idx + seq_length]).astype(np.int64))
+            tgt_y = torch.from_numpy((self.tgt_data[idx + 1 : idx + 1 + seq_length]).astype(np.int64))
+            return x, y, tgt_x, tgt_y 
         return x, y
 
 
-def get_dataloader(data, sequence_length, batch_size, seed=0, source_ids=None, distributed_backend=None):
+def get_dataloader(data, sequence_length, batch_size, tgt_dataset=None, seed=0, source_ids=None, distributed_backend=None):
     """Create a DataLoader for the given data. If distributed_backend is provided and is truly
     distributed (world size > 1), the DataLoader will be created with a DistributedSampler that
     splits the data across the processes (in conjunction with DDP).
@@ -76,7 +79,7 @@ def get_dataloader(data, sequence_length, batch_size, seed=0, source_ids=None, d
 
     Returns both the dataloader and the sampler.
     """
-    dataset = Dataset(data, source_ids, sequence_length=sequence_length)
+    dataset = Dataset(data, source_ids, sequence_length=sequence_length, tgt_data=tgt_dataset)
     if distributed_backend and distributed_backend.get_world_size() > 1:
         sampler = torch.utils.data.DistributedSampler(
             dataset,
@@ -95,6 +98,5 @@ def get_dataloader(data, sequence_length, batch_size, seed=0, source_ids=None, d
         sampler=sampler,
         batch_size=batch_size,
         num_workers=0,
-        # drop_last=True
     )
     return loader, sampler

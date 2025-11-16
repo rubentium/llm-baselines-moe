@@ -41,12 +41,13 @@ def main(args):
     random.seed(args.seed)
     np.random.seed(args.seed)
     
-    print(f"Loading dataset '{args.dataset}'")
+    print(f"Loading dataset '{args.dataset}' with target dataset {args.tgt_dataset}")
     
     data = get_dataset(args) # data is a dict: {'train': train_tokenized, 'val': eval_tokenized, etc...}
     if args.data_in_ram:
         if "train_exp" in data:
-            data = {'train': np.array(data['train']), 'val': np.array(data['val']), 
+            data = {'train': np.array(data['train']), 'val': np.array(data['val']),
+                    'tgt_train': np.array(data['tgt_train']), 'tgt_val': np.array(data['tgt_val']), 
                     'train_exp_index': np.array(data['train_exp_index']),
                     'val_exp_index': np.array(data['val_exp_index']),
                     'train_exp': np.array(data['train_exp']), 

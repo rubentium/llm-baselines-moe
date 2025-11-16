@@ -8,9 +8,9 @@ def get_batch(dataloader, device="cpu"):
     batch = next(dataloader)
     if len(batch) == 2:
         x, y = batch
-        source_ids = None
-    elif len(batch) == 3:
-        x, y, source_ids = batch
+        tgt_x, tgt_y = None, None
+    elif len(batch) == 4:
+        x, y, tgt_x, tgt_y = batch
     else:
         raise ValueError(f"Unexpected batch format: {len(batch)} elements in batch")
 
@@ -18,43 +18,48 @@ def get_batch(dataloader, device="cpu"):
         # pin arrays x,y, which allows us to move them to GPU asynchronously (non_blocking=True)
         x = x.pin_memory().to(device, non_blocking=True)
         y = y.pin_memory().to(device, non_blocking=True)
-        source_ids = source_ids.pin_memory().to(device, non_blocking=True) if source_ids is not None else None
+        tgt_x = tgt_x.pin_memory().to(device, non_blocking=True) if tgt_x is not None else None
+        tgt_y = tgt_y.pin_memory().to(device, non_blocking=True) if tgt_y is not None else None
     else:
         x = x.to(device)
         y = y.to(device)
-        source_ids = source_ids.to(device, non_blocking=True) if source_ids is not None else None
-    if source_ids is not None:
-        return x, y, source_ids
+        tgt_x = tgt_x.to(device, non_blocking=True) if tgt_x is not None else None
+        tgt_y = tgt_y.to(device, non_blocking=True) if tgt_y is not None else None
+
+    if tgt_x is not None:
+        return x, y, tgt_x, tgt_y
     return x, y
 
 
 @torch.no_grad()
-def eval(model, data_val_iter, exp_assignment, exp_assignment_index, device='cpu', max_num_batches=24, ctx=nullcontext(), token_loss_tracker=None):
+def eval(model, data_val_iter, exp_assignment, device='cpu', max_num_batches=24, ctx=nullcontext(), token_loss_tracker=None):
     assert model.training == False
 
     loss_list_val, acc_list = [], []
+    val_exp_assignment_index = 0
 
     for _ in range(max_num_batches): 
         x, y = get_batch(data_val_iter, device=device)
+        b, t = x.size()
+
         with ctx:
             outputs = model(x, targets=y, get_logits=True, 
                             exp_assignment=exp_assignment,
-                            exp_assignment_index=exp_assignment_index,
+                            exp_assignment_index=val_exp_assignment_index,
                             token_loss_tracker=token_loss_tracker)
-        if token_loss_tracker is not None:
+        
+            val_exp_assignment_index += b * t
+
             val_loss = outputs['loss'].mean()
-        else:
-            val_loss = outputs['loss']
+
         loss_list_val.append(val_loss)
         acc_list.append((outputs['logits'].argmax(-1) == y).float().mean())
-        
-        exp_assignment, exp_assignment_index, token_loss_tracker = outputs["exp_assignment"], outputs["exp_assignment_index"], outputs["token_loss_tracker"]
-   
+
     val_acc = torch.stack(acc_list).mean().item()
     val_loss = torch.stack(loss_list_val).mean().item()
     val_perplexity = 2.71828 ** val_loss
 
-    return val_acc, val_loss, val_perplexity, exp_assignment, exp_assignment_index, token_loss_tracker
+    return val_acc, val_loss, val_perplexity
 
 
 def save_checkpoint(distributed_backend, model, opt, scheduler, itr, ckpt_path, **extra_args):

@@ -33,6 +33,7 @@ def parse_args(base_parser, args, namespace):
     parser.add_argument('--dataset', default='slimpajama', choices=['slimpajama', 'wikitext', "shakespeare-char", 'arxiv', "arxiv2000", "arxiv+wiki", 'openwebtext2', 'mathqa'])
     parser.add_argument('--vocab_size', default=50304, type=int)
     parser.add_argument('--data_in_ram', action='store_true') # force the data to RAM, mostly useless except for openwebtext2 
+    parser.add_argument('--tgt_dataset', default='', type=none_or_str) # target dataset
     # Model params
     parser.add_argument('--model', default='base', choices=['base', 'llama2'])
     parser.add_argument('--use_pretrained', default="auto", type=none_or_str) # 'none', 'gpt-2' or a path to the pretraind model
@@ -71,6 +72,7 @@ def parse_args(base_parser, args, namespace):
     parser.add_argument('--distributed_backend', default=None, type=str, required=False,
                         choices=distributed.registered_backends())  # distributed backend type
     parser.add_argument('--save_checkpoint_freq', default=None, type=int, required=False)
+    parser.add_argument('log_expert_assignments', action='store_true') # whether to log expert assignments or not
 
     args = parser.parse_args(args, namespace)
     args.run_id = run_id if not args.undefine_run_id else None

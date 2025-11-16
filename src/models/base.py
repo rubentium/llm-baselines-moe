@@ -198,24 +198,21 @@ class GPTBase(nn.Module):
         x = self.transformer.ln_f(x)
         # writing the selected tokens into the expert assignment memory
         # if exp_assignment is not None and exp_assignment_index is not None:
-        if exp_assignment is not None and exp_assignment_index is not None:
-            ids = exp_assignment_index[0]
-            batch_assignment = logits_and_experts["selected_experts"].squeeze().cpu().numpy()
+        ids = exp_assignment_index
+        batch_assignment = logits_and_experts["selected_experts"].squeeze().cpu().numpy()
+        if exp_assignment is not None:
             exp_assignment[ids:ids + b * t] = batch_assignment
-            exp_assignment_index[0] += b * t
             exp_assignment.flush()
 
         if targets is not None:
             # if we are given some desired targets also calculate the loss
             logits = self.lm_head(x)
+            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1, reduction='none')
+            batch_loss = loss.cpu().detach().numpy()
             if token_loss_tracker is not None:
                 # if we are given a token loss array, write the loss into it
-                loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1, reduction='none')
-                batch_loss = loss.cpu().detach().numpy()
                 token_loss_tracker[ids:ids + b * t] = batch_loss
                 token_loss_tracker.flush()
-            else: 
-                loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
 
             if self.config.moe_num_experts > 0:
                 if self.config.moe_type == "token_choice":
@@ -239,10 +236,7 @@ class GPTBase(nn.Module):
         logits = logits if get_logits else None
         # assert b == 32, "Batch size should be 32, but got {}".format(b)
         return {'logits': logits,
-                'loss': loss, 
-                "exp_assignment_index": exp_assignment_index, 
-                "exp_assignment": exp_assignment, 
-                "token_loss_tracker": token_loss_tracker,
+                'loss': loss,
                 "batch_assignment": torch.tensor(batch_assignment) if batch_assignment is not None else None,
                 "batch_loss": torch.tensor(batch_loss) if batch_loss is not None else None,}
 

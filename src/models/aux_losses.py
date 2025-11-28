@@ -86,3 +86,105 @@ def router_z_loss(router_logits: torch.Tensor) -> float:
     log_z = torch.logsumexp(router_logits, dim=-1)
     z_loss = log_z**2
     return torch.sum(z_loss, dtype=torch.float32) / (num_tokens)
+
+def routing_div_loss(router_logits: torch.Tensor):
+    """
+    Router diversity loss as implemented in this paper: 
+    https://arxiv.org/pdf/2505.22323
+    """
+    all_probs = F.softmax(router_logits, dim=-1, dtype=torch.float32) # [num_tokens, num_experts]
+    avg_expert_scores = torch.mean(all_probs, dim=0)  # [num_experts]
+    pre_sum_terms = torch.square(all_probs - avg_expert_scores)  # [num_tokens, num_experts]
+    diversity_loss =  -torch.mean(torch.mean(pre_sum_terms, dim=-1))  # scalar
+    return diversity_loss
+
+def expert_ortho_loss_old(token_matrix: torch.Tensor, input: torch.Tensor, chosen_experts: torch.Tensor):
+    """
+    Expert specialization loss as implemented in this paper: 
+    https://arxiv.org/pdf/2505.22323
+
+    tokens: tensor of shape [batch, seq_len] (token indices)
+    input: tensor of shape [batch, seq_len, embed_dim]
+    chosen_experts: tensor of shape [batch*seq_len, 1] (expert assigned per token)
+    """
+    device = input.device
+
+    tokens_flat = token_matrix.view(-1).unsqueeze(-1)  # [batch*seq_len, 1]
+    input_flat = input.view(-1, input.shape[-1])  # [batch*seq_len, embed_dim]
+    
+    norm_sq = input_flat.norm(p=2, dim=-1, keepdim=True) ** 2
+    normed_input = input_flat / (norm_sq + 1e-6)    # [batch*seq_len, embed_dim]
+
+    experts = torch.unique(chosen_experts)
+
+    loss = torch.tensor(0.0).to(device=device)
+    for e in experts:
+        input_mask = (chosen_experts != e).bool()  # [unmasked, 1]
+        normed_input_mask = (chosen_experts == e).bool()   # [masked, 1]
+        pruned_input = input_flat[input_mask.squeeze(-1), :]   # [unmasked, embed_dim]
+        pruned_normed_input = normed_input[normed_input_mask.squeeze(-1), :]    # [masked, embed_dim]
+        dot_prod = pruned_input @ pruned_normed_input.T     # [unmasked, masked]    
+
+        pruned_tokens_vert = tokens_flat[input_mask].unsqueeze(-1)  # [unmasked, 1]
+        pruned_tokens_hor = tokens_flat[normed_input_mask].unsqueeze(-1)  # [masked, 1]
+        token_mask = (pruned_tokens_vert == pruned_tokens_hor.T).bool()   # [unmasked, masked]
+
+        loss += dot_prod[token_mask].sum()
+
+    # dot_prod = input_flat @ normed_input.T  # [batch*seq_len, batch*seq_len]
+
+    # loss = torch.tensor(0.0, device=input.device)
+    # expert_mask = 1-(chosen_experts == chosen_experts.T).float()  # [batch*seq_len, batch*seq_len]
+    # token_mask = (tokens_flat.unsqueeze(1) == tokens_flat.unsqueeze(0)).float()  # [batch*seq_len, batch*seq_len]
+    # per_expert_dot_prod = dot_prod * token_mask * expert_mask
+    # loss = torch.sum(per_expert_dot_prod)
+
+    return loss
+
+
+def expert_ortho_loss(tokens: torch.Tensor,
+                                  input: torch.Tensor,
+                                  chosen_experts: torch.Tensor,
+                                  eps: float = 1e-6):
+    """
+    Orthogonality loss with denominator ||x_k||^2 as in the paper.
+
+    Args:
+        input_flat: [N, D] token embeddings
+        tokens_flat: [N] token ids
+        chosen_experts: [N] expert indices
+        eps: small value for numerical stability
+    Returns:
+        scalar loss
+    """
+    input_flat = input.view(-1, input.shape[-1])
+    tokens_flat = tokens.reshape(-1)
+    x = input_flat  # keep original embeddings (not normalized)
+
+    experts = torch.unique(chosen_experts)
+    loss = x.new_tensor(0.0)
+
+    for e in experts:
+        mask_e = (chosen_experts == e).squeeze(-1)
+        x_e = x[mask_e]               # [Ne, D]
+        t_e = tokens_flat[mask_e]     # [Ne]
+
+        mask_ne = ~mask_e
+        x_ne = x[mask_ne]             # [Nne, D]
+        t_ne = tokens_flat[mask_ne]   # [Nne]
+
+        if x_e.size(0) == 0 or x_ne.size(0) == 0:
+            continue
+
+        dots = x_ne @ x_e.T           # [Nne, Ne]
+
+        norm_sq = (x_e ** 2).sum(dim=-1)  # [Ne]
+
+        token_mask = (t_ne.unsqueeze(1) == t_e.unsqueeze(0))  # [Nne, Ne]
+
+        selected = dots[token_mask]
+        denom = norm_sq.unsqueeze(0).expand_as(dots)[token_mask] + eps
+
+        loss += (selected / denom).sum()
+
+    return loss

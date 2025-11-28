@@ -14,8 +14,8 @@ import tiktoken
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
-from .moe import MoE, ExpertChoiceMoE, MOE_MLP
-from.aux_losses import entropy_reg, load_balancing_loss, router_z_loss
+from .moe import MoE, MOE_MLP
+from.aux_losses import entropy_reg, load_balancing_loss, router_z_loss, routing_div_loss, expert_ortho_loss
 
 
 class LayerNorm(nn.Module):
@@ -125,16 +125,17 @@ class GPTBase(nn.Module):
         if config.moe_num_experts > 0:
             if config.moe_type == "token_choice":
                 self.expert_routing = MoE(config, MOE_MLP)
-            elif config.moe_type == "expert_choice":
-                self.expert_routing = ExpertChoiceMoE(config, MOE_MLP)
+            # elif config.moe_type == "expert_choice":
+            #     self.expert_routing = ExpertChoiceMoE(config, MOE_MLP)
             else:   
-                raise ValueError("Check your MOE type token_choice or expert_choice")
+                raise NotImplementedError("Check your MOE type, only token_choice is implemented")
 
         self.transformer = nn.ModuleDict(dict(
             wte = nn.Embedding(config.vocab_size, config.n_embd),
             wpe = nn.Embedding(config.sequence_length, config.n_embd),
             drop = nn.Dropout(config.dropout),
-            h = nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
+            h = nn.ModuleList([Block(config) for _ in range(config.n_layer-1)]),
+            no_mlp_block = Block(config, moe=True),
             ln_f = LayerNorm(config.n_embd, bias=config.bias),
         ))
 
@@ -193,7 +194,12 @@ class GPTBase(nn.Module):
         for block in self.transformer.h:
             x = block(x)
 
-        x, logits_and_experts = self.expert_routing(x)
+        # MoE block
+        x = self.transformer.no_mlp_block(x)
+        x_moe, logits_and_experts = self.expert_routing(self.transformer.no_mlp_block.ln_2(x))
+        x = x + x_moe
+
+        hidden_x = x.clone().float()
 
         x = self.transformer.ln_f(x)
         # writing the selected tokens into the expert assignment memory
@@ -218,6 +224,10 @@ class GPTBase(nn.Module):
                 if self.config.moe_type == "token_choice":
                     # calculate the router losses per layer
                     logit, chosen_experts = logits_and_experts["router_logits"], logits_and_experts["selected_experts"]
+                    orthogonal_loss = expert_ortho_loss(idx, hidden_x, chosen_experts) if self.config.moe_expert_ortho_loss_factor > 0 else 0
+                    div_loss = routing_div_loss(logit) if self.config.moe_routing_div_loss_factor > 0 else 0
+                    loss += orthogonal_loss * self.config.moe_expert_ortho_loss_factor
+                    loss += div_loss * self.config.moe_routing_div_loss_factor
                     router_losses = self.get_router_losses(
                         logit, chosen_experts, eval=not self.training
                     )
@@ -229,6 +239,8 @@ class GPTBase(nn.Module):
                                 v
                                 * getattr(self.config, k + "_factor")
                             )
+                else:
+                    raise NotImplementedError("Router losses not implemented for expert_choice MOE")
         else:
             # inference-time mini-optimization: only forward the lm_head on the very last position
             logits = self.lm_head(x[:, [-1], :]) # note: using list [-1] to preserve the time dim

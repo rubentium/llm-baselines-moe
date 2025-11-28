@@ -54,7 +54,10 @@ def parse_args(base_parser, args, namespace):
     parser.add_argument('--moe_entropy_loss_factor', default=0.001, type=float)
     parser.add_argument('--moe_aux_loss_factor', default=0.01, type=float)
     parser.add_argument('--moe_z_loss_factor', default=0.001, type=float)
-    parser.add_argument('--no_doge', action='store_true')
+    parser.add_argument('--moe_routing_div_loss_factor', default=0.00, type=float)
+    parser.add_argument('--moe_expert_ortho_loss_factor', default=0.0, type=float)
+    # Experiment params
+    parser.add_argument('--no_doge', action='store_false')
     parser.add_argument('--moe_router_loss', default='load_balancing_only', type=str, choices=['entropy', 'load_balancing_only', 'load_balancing_z_loss'])
     parser.add_argument('--multiple_of',  # make SwiGLU hidden layer size multiple of large power of 2
         default=256,
@@ -72,7 +75,7 @@ def parse_args(base_parser, args, namespace):
     parser.add_argument('--distributed_backend', default=None, type=str, required=False,
                         choices=distributed.registered_backends())  # distributed backend type
     parser.add_argument('--save_checkpoint_freq', default=None, type=int, required=False)
-    parser.add_argument('log_expert_assignments', action='store_true') # whether to log expert assignments or not
+    parser.add_argument('--log_expert_assignments', action='store_true') # whether to log expert assignments or not
 
     args = parser.parse_args(args, namespace)
     args.run_id = run_id if not args.undefine_run_id else None

@@ -156,8 +156,8 @@ def get_slimpajama_data(seq_len, batch_size, acc_steps, iterations, eval_freq, r
         return {
             "train": train_data[:train_len+1],
             "val": val_data[:val_len+1],
-            "tgt_train": tgt_train_data[:train_len+1] if tgt_dataset else tgt_train_data,
-            "tgt_val": tgt_val_data[:val_len+1] if tgt_dataset else tgt_val_data,
+            "tgt_train": tgt_train_data[:train_len+1] if tgt_dataset else train_data[:train_len+1],
+            "tgt_val": tgt_val_data[:val_len+1] if tgt_dataset else val_data[:val_len+1],
             "train_source_ids": train_source_ids,
             "val_source_ids": val_source_ids,
             "train_exp": train_exprt_mem if log_assignments else None,
@@ -170,8 +170,8 @@ def get_slimpajama_data(seq_len, batch_size, acc_steps, iterations, eval_freq, r
     return {
         "train": train_data[:train_len+1],
         "val": val_data[:val_len+1],
-        "tgt_train": tgt_train_data[:train_len+1] if tgt_dataset else train_data,
-        "tgt_val": tgt_val_data[:val_len+1] if tgt_dataset else val_data,
+        "tgt_train": tgt_train_data[:train_len+1] if tgt_dataset else train_data[:train_len+1],
+        "tgt_val": tgt_val_data[:val_len+1] if tgt_dataset else val_data[:val_len+1],
         "train_source_ids": train_source_ids,
         "val_source_ids": val_source_ids,
     }

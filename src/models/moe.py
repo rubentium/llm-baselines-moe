@@ -110,6 +110,7 @@ class ExpertChoiceMoE(nn.Module):
             # topk over tokens!
             weights, selected_tokens = torch.topk(all_probs.T, top_k)
         elif self.softmax_order == "topk_softmax":
+            raise NotImplementedError("topk_softmax not implemented")
             # weights and selected tokens: [num_experts, top_k]
             weights, selected_tokens = torch.topk(router_logits.T, top_k)
             weights = F.softmax(weights, dim=-1, dtype=torch.float32)
